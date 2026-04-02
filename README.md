@@ -1,5 +1,250 @@
 ![Preview](https://repository-images.githubusercontent.com/1188661951/fd2bd3dd-5d6e-489e-9259-59c827988f06)
 
+A host-side orchestration application that combines:
+- A web control panel
+- Multi-brain LLM routing and execution
+- A persistent task queue
+- Calendar, mail, finance, and project-cycle automation
+- Secure sandboxed tool execution in Docker
+- Retrieval and document intelligence (Qdrant-backed)
+
+It is designed to run continuously as an autonomous or semi-autonomous operator while still allowing direct user supervision.
+
+## 2. Core User-Facing Features
+
+### 2.1 Main UI and Control Surface
+
+The web UI includes dedicated tabs for:
+- `Nova` (identity, trust, environment, props, recreation, questions)
+- `Calendar`
+- `Mail`
+- `Projects`
+- `Queue`
+- `Jobs` (cron/schedules/history)
+- `Gateway` (runtime health and logs)
+- `Prompts` (live prompt previews)
+- `Brains` (models, endpoints, routing)
+- `Secrets`
+- `Tools` (tool/skill approvals and request tracking)
+- `State` (file/tree inspector and reset tools)
+- `Tests` (regression suite runner + command helper)
+
+### 2.2 Conversational Intake and Routing
+
+The system supports:
+- Direct run (`/api/agent/run`)
+- Triage-first route selection (`/api/tasks/triage`)
+- Queue handoff for deeper worker execution
+- Observer-native immediate responses for common requests (time/date/status-style prompts)
+- Prompt rewrite assistance using idle helper brains
+- Optional worker preflight for ambiguity checks and clarification
+
+### 2.3 Queue and Task Lifecycle
+
+Queue functionality includes:
+- Enqueueing, dispatching, removing, aborting, and answering tasks
+- Task event stream and per-task history retrieval
+- Waiting-for-user task handling and resume flow
+- Deduplication of recently queued tasks
+- Repair/follow-up monitor views
+- Reshape issue tracking and reset workflow
+- Queue pause/resume controls
+
+### 2.4 Calendar and To-Do
+
+Calendar functionality:
+- Event create/update/delete
+- Event state transitions (`active`, `completed`, `cancelled`)
+- Repeat scheduling (`daily`, `weekly`, `monthly`, `yearly`)
+- Optional Nova action payloads when events become due
+
+To-do functionality:
+- CRUD-like flow (`add`, `state update`, `remove`)
+- Shared backlog for user and Nova
+- Session-aware status updates
+
+### 2.5 Mail Operations
+
+Mail capabilities include:
+- IMAP polling and inbox status
+- SMTP sending
+- Move operations (trash/archive, by id/uid/filters/latest)
+- Optional unsure-email summary toggles
+- Mail trust assessment and command gating by source trust level
+- Mail-watch rule workflow for automated handling and user escalation on uncertain messages
+
+### 2.6 Finance Tracking
+
+Finance features include:
+- Finance entry listing/creation/update/deletion
+- Manual entries (income/expense, status, category, amounts, currency, timestamp)
+- Sync from recent mail to derive finance entries
+- Tracker summary metrics (tracked/paid/unpaid/net)
+- Financial-year style review views
+
+### 2.7 Projects and Pipeline Visibility
+
+Project-cycle features include:
+- Project config and system state management
+- Workspace project introspection and policy-driven handling
+- Checklist operations (remove item, add/remove role)
+- Pipeline list and pipeline trace endpoints
+- Role/playbook-aware planning and phase/workstream assessment
+- Project-cycle retry/recovery shaping and escalation-aware handoff logic
+- Completed project visibility after rotation/export
+
+### 2.8 Runtime and State Inspection
+
+Operational inspection includes:
+- Runtime status (brains, endpoint health, GPU, Qdrant, activity)
+- Runtime options/config snapshots
+- SSE logs and observer event streaming
+- File tree and file content inspection across scopes (`workspace`, `queue`, `runtime`, etc.)
+- Output file listing and download
+- Guided internal reset for simple-project state
+
+### 2.9 Voice Interface and Trust
+
+Voice functionality includes:
+- Browser speech synthesis and recognition integration
+- Passive listening toggle flow
+- Voice fingerprint capture and matching
+- Threshold-based trust profile matching
+- Command allow/block decisions using configured minimum voice trust level
+- Persisted trust records that unify email and voice identity concepts
+
+### 2.10 3D Avatar and Visual Stage
+
+Avatar system includes:
+- Three.js rendering with GLTF model support
+- Emotion-to-animation mapping and talking clip rotation
+- Stylization presets/effects (post-processing pipeline)
+- Configurable room textures/backgrounds
+- Configurable prop slots and model placement
+
+## 3. Automation and Background Intelligence
+
+### 3.1 Internal Periodic Jobs
+
+The system maintains internal queue-backed recurring jobs for:
+- Opportunity scanning
+- Prompt memory question maintenance
+- Mail-watch sweeps
+- Recreation/free-time cycles
+
+### 3.2 Opportunity and Maintenance Systems
+
+Background logic includes:
+- Idle-time workspace opportunity generation
+- Helper-scout work-package generation
+- Queue maintenance snapshots and reshape follow-up planning
+- Automatic skip/backoff behavior based on activity, backlog, and lane capacity
+
+### 3.3 Recreation Cycle
+
+The recreation subsystem:
+- Queues non-deliverable free-time reflection tasks
+- Encourages self-directed browsing/thinking/writing
+- Validates that personal-note output is actually persisted
+
+## 4. Retrieval and Document Intelligence
+
+Retrieval domain capabilities:
+- Qdrant collection lifecycle and health usage
+- Workspace document scanning and normalization
+- Content chunking with overlap controls
+- Embedding-based indexing and query
+- Filtered search (workspace/root/document/source)
+- Document overview/search summaries surfaced through observer-native tooling
+
+## 5. Tooling, Skills, and Approvals
+
+### 5.1 Tool Catalog and Governance
+
+Tool governance includes:
+- Unified catalog across intake and worker scopes
+- Risk classification (`normal`, `medium`, `high`, `approval`)
+- Per-tool autonomous approval flags
+- Persistent tool registry state
+
+### 5.2 Capability Request Tracking
+
+The system records unmet capability demand:
+- Missing tool requests
+- Skill installation requests
+- Aggregation and status tracking for open/resolved requests
+
+### 5.3 Skill Library Integration
+
+Skill features include:
+- Search and inspect via clawhub inside sandbox context
+- Install into sandbox workspace
+- Approved-skill gating before operational usage
+- Installed skill inventory and metadata
+
+## 7. Security and Isolation Model
+
+### 7.1 Sandbox Model
+
+Tool execution is isolated in a Docker container with:
+- Read-only root filesystem
+- Dropped Linux capabilities (`--cap-drop ALL`)
+- `no-new-privileges`
+- PID/memory/CPU limits
+- Dedicated writable mounts only for allowed input/output/state paths
+
+### 7.2 Secrets Management
+
+Secrets are managed via OS keychain (`keytar`) with handles for:
+- Mail agent passwords
+- WordPress shared secrets
+- Retrieval/Qdrant API key
+- Custom handles
+
+### 7.3 Trust Controls
+
+Trust system supports:
+- Source trust levels (`unknown`, `known`, `trusted`)
+- Email command minimum trust policy
+- Voice command minimum trust policy
+- Unified trust records with optional voice signature thresholds
+
+## 8. API Surface Summary (Grouped)
+
+Primary route groups:
+- Runtime: `/api/runtime/*`, `/events/*`
+- Intake/run: `/api/agent/run`, `/api/tasks/triage`, `/api/prompts/review`
+- Queue/tasks: `/api/tasks/*`, `/api/queue/control`
+- Cron/jobs: `/api/cron/*`
+- Calendar/mail/todo: `/api/calendar/*`, `/api/mail/*`, `/api/finance/*`, `/api/todos/*`
+- Config/control: `/api/app/config`, `/api/brains/config`, `/api/projects/*`, `/api/tools/config`, `/api/secrets/*`
+- Inspection/output/regressions: `/api/inspect/*`, `/api/output/*`, `/api/regressions/*`
+
+## 9. Testing and Quality Features
+
+Regression support includes:
+- Built-in suite definitions for intake, planner, worker, and related flows
+- UI-triggered regression execution
+- Latest persisted report retrieval
+- Generated command-line helper for external run parity (`run-regressions.js`)
+
+## 10. Runtime Dependencies and Deployment Shape
+
+Expected runtime stack:
+- Host Node.js observer process (`node server.js`)
+- Ollama endpoint(s) for model execution
+- Docker sandbox container for tool execution
+- Qdrant for retrieval/search storage
+
+## 11. Feature Positioning Snapshot
+
+In practical terms, this application is:
+- A local AI operations console
+- A queue-first autonomous worker coordinator
+- A personal operations layer (mail/calendar/todo)
+- A project-cycle automation engine
+- A safety-conscious sandboxed tool runtime
+
 # Handoff
 
 This repo no longer runs as an OpenClaw gateway stack, only the skill library remains integrated. The live system is a host-side Node observer with a Docker sandbox for LLM-controlled tools, plus Ollama for model execution.
