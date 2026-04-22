@@ -116,13 +116,16 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
     if (shouldRoute) {
       const localTriage = triagePromptLocally({ message: effectiveMessage, brain });
       if (localTriage.predictedMode === "queue" && localTriage.ack) {
-        queueAcknowledgement(localTriage.ack);
+        queueAcknowledgement(pickLanguageVariantFromApp(
+          "acknowledgements.queueChecking",
+          localTriage.ack
+        ));
         spokeInitialAck = true;
         hintEl.textContent = "Triage is checking whether this should be escalated.";
       } else if (!spokeInitialAck) {
         const earlyAck = pickLanguageVariantFromApp(
           "acknowledgements.queueChecking",
-          "Let me check."
+          "Let me get back to you on that one."
         );
         queueAcknowledgement(earlyAck);
         spokeInitialAck = true;
@@ -214,8 +217,8 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
       const destinationLabel = triage.selectedBrainLabel || task.requestedBrainLabel || task.requestedBrainId;
       const queueTitle = triage.mode === "queue" ? "Getting it ready" : "Getting it ready";
       const queueDisplayText = triage.replyText || (triage.mode === "queue"
-        ? pickLanguageVariantFromApp("acknowledgements.queueEscalated", `I'm getting {{taskRef}} ready now.\n\nI'll take a deeper look and follow up shortly.`, { taskRef, destinationLabel })
-        : pickLanguageVariantFromApp("acknowledgements.queueReady", `I'm getting {{taskRef}} ready now.`, { taskRef, destinationLabel }));
+        ? pickLanguageVariantFromApp("acknowledgements.queueEscalated", `Let me get back to you on that one.\n\nI'll hand {{taskRef}} to {{destinationLabel}} for a closer look.`, { taskRef, destinationLabel })
+        : pickLanguageVariantFromApp("acknowledgements.queueReady", `Let me get back to you on that one.\n\nI've queued {{taskRef}} for {{destinationLabel}}.`, { taskRef, destinationLabel }));
       const queueSpokenText = queueDisplayText.replace(/\n+/g, " ");
       runStatusEl.textContent = "queued";
       runBrainEl.textContent = `${brain?.label || "Queue intake"} -> ${destinationLabel}`;
@@ -242,7 +245,10 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
     }
 
     if (!spokeInitialAck) {
-      queueAcknowledgement("I’m working on it.");
+      queueAcknowledgement(pickLanguageVariantFromApp(
+        "acknowledgements.directWorking",
+        "Let me think for a minute."
+      ));
     }
 
     attachments = [];

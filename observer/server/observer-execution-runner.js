@@ -51,7 +51,8 @@ export function createObserverExecutionRunner(context = {}) {
     sanitizeSkillSlug,
     appendRepairLesson,
     OBSERVER_CONTAINER_WORKSPACE_ROOT,
-    loopLessonsHostPath
+    loopLessonsHostPath,
+    runPluginHook = async (_, payload) => payload
   } = context;
 
   async function executeObserverRun({
@@ -820,6 +821,16 @@ export function createObserverExecutionRunner(context = {}) {
         if (repairContext && typeof appendRepairLesson === "function") {
           appendRepairLesson(repairContext).catch(() => {});
         }
+        // Notify plugins that a worker execution completed successfully
+        runPluginHook("worker:execution:completed", {
+          ok: true,
+          taskId: String(normalizedTaskContext?.taskId || "").trim(),
+          sessionId: String(sessionId || "").trim(),
+          brain: { label: brain.label, specialty: brain.specialty, model: brain.model },
+          toolsUsed: executedTools.slice(),
+          durationMs: Date.now() - startedAt,
+          finalText
+        }).catch(() => {});
         return {
           ok: true,
           code: 0,
@@ -1086,7 +1097,7 @@ export function createObserverExecutionRunner(context = {}) {
             semanticError = buildToolSemanticFailureMessage(name, toolResult);
           }
 
-          return {
+          const outcome = {
             toolCall,
             name,
             parsedArgs,
@@ -1097,6 +1108,15 @@ export function createObserverExecutionRunner(context = {}) {
             inspectionTargetKey,
             error: semanticError
           };
+          // Notify plugins that a worker tool call completed
+          runPluginHook("worker:tool-call:completed", {
+            name,
+            args: parsedArgs,
+            semanticOk,
+            taskId: String(normalizedTaskContext?.taskId || "").trim(),
+            sessionId: String(sessionId || "").trim()
+          }).catch(() => {});
+          return outcome;
         } catch (error) {
           const permissionApprovalRequired = error?.permissionApprovalRequired === true
             || String(error?.code || "").trim() === "permission_requires_user_approval";

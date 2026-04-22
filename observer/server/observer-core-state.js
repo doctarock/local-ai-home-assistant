@@ -222,9 +222,24 @@ export function createInitialObserverConfig({ localOllamaBaseUrl = "" } = {}) {
 export function createInitialObserverLanguage() {
   return {
     acknowledgements: {
-      directWorking: "I'm working on it.",
-      queueReady: "I'm getting {{taskRef}} ready now.",
-      queueEscalated: "I'm getting {{taskRef}} ready now.\n\nI'll take a deeper look and follow up shortly."
+      directWorking: [
+        "Let me think for a minute.",
+        "Give me a minute to think that through.",
+        "Let me sit with that for a minute."
+      ],
+      queueChecking: [
+        "Let me get back to you on that one.",
+        "I'll come back to you on that one.",
+        "Let me take that away and come back with it."
+      ],
+      queueReady: [
+        "Let me get back to you on that one.\n\nI've queued {{taskRef}} for {{destinationLabel}}.",
+        "I'll come back to you on that one.\n\n{{taskRef}} is queued for {{destinationLabel}}."
+      ],
+      queueEscalated: [
+        "Let me get back to you on that one.\n\nI'll hand {{taskRef}} to {{destinationLabel}} for a closer look.",
+        "I'll come back to you on that one.\n\n{{destinationLabel}} will handle {{taskRef}} next."
+      ]
     },
     voice: {
       passiveOff: "Passive listening is off. Say <strong>{{botName}}</strong> to begin, then <strong>{{stopPhrase}}</strong> to finish once enabled.",

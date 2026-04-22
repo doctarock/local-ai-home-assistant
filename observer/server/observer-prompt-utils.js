@@ -68,6 +68,13 @@ export function createObserverPromptUtils(context = {}) {
     if (!entry.result || typeof entry.result !== "object") {
       return entry;
     }
+    // When the execution runner has already attached a semantic compression summary,
+    // drop the raw content fields — the model should use the dense __modelFormat instead.
+    if (!preserveFullContent && entry.result.__modelFormat) {
+      const { content: _c, body: _b, stdout: _s, ...compressedResult } = entry.result;
+      entry.result = compressedResult;
+      return entry;
+    }
     const result = { ...entry.result };
     if (typeof result.content === "string" && !preserveFullContent) {
       result.content = compactTaskText(result.content, 700);
@@ -114,23 +121,31 @@ export function createObserverPromptUtils(context = {}) {
     if (!toolResult.ok && toolResult.error) {
       parts.push(`error=${compactTaskText(String(toolResult.error || ""), 180)}`);
     } else if (result) {
-      const textPreview = String(
-        result.contentSummary
-        || result.bodySummary
-        || result.content
-        || result.body
-        || result.text
-        || ""
-      ).trim();
-      if (textPreview) {
-        parts.push(`summary=${compactTaskText(textPreview.replace(/\s+/g, " "), 220)}`);
-      } else if (Array.isArray(result.entries)) {
-        parts.push(`entries=${result.entries.length}`);
-      } else if (Array.isArray(result.files)) {
-        parts.push(`files=${result.files.length}`);
+      // Prefer the pre-computed semantic compression summary when available
+      if (result.__modelFormat) {
+        parts.push(`semantic=${String(result.__modelFormat).slice(0, 280)}`);
+        if (result.__findings && Array.isArray(result.__findings) && result.__findings.length) {
+          parts.push(`findings=${result.__findings.slice(0, 2).join("; ").slice(0, 180)}`);
+        }
+      } else {
+        const textPreview = String(
+          result.contentSummary
+          || result.bodySummary
+          || result.content
+          || result.body
+          || result.text
+          || ""
+        ).trim();
+        if (textPreview) {
+          parts.push(`summary=${compactTaskText(textPreview.replace(/\s+/g, " "), 220)}`);
+        } else if (Array.isArray(result.entries)) {
+          parts.push(`entries=${result.entries.length}`);
+        } else if (Array.isArray(result.files)) {
+          parts.push(`files=${result.files.length}`);
+        }
       }
     }
-    return compactTaskText(parts.join(" | "), 320);
+    return compactTaskText(parts.join(" | "), 400);
   }
 
   function buildPostToolDecisionInstruction(toolResults = [], {

@@ -1,3 +1,22 @@
+import { compressShellOutput } from "./output-semantic-compression.js";
+
+// Replace fenced code blocks / raw output sections over the threshold with a compressed summary.
+// This reduces noise when task messages contain embedded sample output or paste dumps.
+const INLINE_COMPRESS_THRESHOLD = 600;
+
+function compressInlineBlocks(text = "") {
+  return String(text || "").replace(
+    /```[\w]*\n([\s\S]*?)```/g,
+    (match, inner) => {
+      if (inner.length < INLINE_COMPRESS_THRESHOLD) return match;
+      const compressed = compressShellOutput(inner, "inline-block");
+      const density = compressed.informationDensity ?? "?";
+      const findings = (compressed.keyLines || []).slice(0, 3).join("; ");
+      return `[compressed block: ${inner.length} chars → density ${density}%${findings ? ` | ${findings}` : ""}]`;
+    }
+  );
+}
+
 export function createObserverQueuedTaskPrompting(context = {}) {
   const {
     buildProjectQueuedTaskExecutionPrompt = null,
@@ -7,11 +26,12 @@ export function createObserverQueuedTaskPrompting(context = {}) {
     isProjectCycleMessage = () => false,
     isProjectCycleTask = () => false,
     inferTaskSpecialty,
-    summarizeTaskCapabilities
+    summarizeTaskCapabilities,
+    runPluginHook = async (_, payload) => payload
   } = context;
 
-  function buildQueuedTaskExecutionPrompt(taskPrompt = "", task = {}) {
-    const basePrompt = String(taskPrompt || "").trim();
+  async function buildQueuedTaskExecutionPrompt(taskPrompt = "", task = {}) {
+    const basePrompt = compressInlineBlocks(String(taskPrompt || "").trim());
     if (!basePrompt) {
       return "";
     }
@@ -38,7 +58,19 @@ export function createObserverQueuedTaskPrompting(context = {}) {
         return projectPrompt;
       }
     }
-    return `${basePrompt}\n\nThis work item came from the shared task queue.${capabilityNote} If you complete meaningful work, summarize it clearly and write any user-facing artifacts into ${OBSERVER_CONTAINER_OUTPUT_ROOT}.`;
+    const baseResult = `${basePrompt}\n\nThis work item came from the shared task queue.${capabilityNote} If you complete meaningful work, summarize it clearly and write any user-facing artifacts into ${OBSERVER_CONTAINER_OUTPUT_ROOT}.`;
+
+    // Allow plugins to append enrichment lines to the task execution prompt
+    // (e.g. sprint phase context, autoplan hints specific to this task type)
+    const enrichResult = await runPluginHook("queue:task-enrich", {
+      suffix: [],
+      taskId: String(task?.id || "").trim(),
+      taskPrompt: basePrompt,
+      internalJobType: String(task?.internalJobType || "").trim(),
+      brainId: String(task?.requestedBrainId || "").trim()
+    }).catch(() => ({ suffix: [] }));
+    const suffix = Array.isArray(enrichResult?.suffix) ? enrichResult.suffix.filter(Boolean) : [];
+    return suffix.length ? `${baseResult}\n${suffix.join("\n")}` : baseResult;
   }
 
   return {

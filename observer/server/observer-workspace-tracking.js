@@ -36,10 +36,22 @@ export function createObserverWorkspaceTracking(context = {}) {
     return [...candidates];
   }
 
+  function normalizeTrackedContainerPath(value = "") {
+    const normalized = normalizeContainerPathForComparison?.(value);
+    if (normalized !== undefined && normalized !== null) {
+      return String(normalized).trim();
+    }
+    return String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  }
+
   function isContainerWorkspacePath(targetPath = "") {
-    const normalized = normalizeContainerPathForComparison(targetPath);
-    return normalized === OBSERVER_CONTAINER_WORKSPACE_ROOT
-      || normalized.startsWith(`${OBSERVER_CONTAINER_WORKSPACE_ROOT}/`);
+    const normalized = normalizeTrackedContainerPath(targetPath);
+    const workspaceRoot = normalizeTrackedContainerPath(OBSERVER_CONTAINER_WORKSPACE_ROOT);
+    if (!normalized || !workspaceRoot) {
+      return false;
+    }
+    return normalized === workspaceRoot
+      || normalized.startsWith(`${workspaceRoot}/`);
   }
 
   function collectTrackedWorkspaceTargets(text = "") {
@@ -47,7 +59,7 @@ export function createObserverWorkspaceTracking(context = {}) {
     const containerWorkspacePaths = new Set();
     for (const candidate of extractContainerPathCandidates(text)) {
       if (isContainerWorkspacePath(candidate)) {
-        containerWorkspacePaths.add(normalizeContainerPathForComparison(candidate));
+        containerWorkspacePaths.add(normalizeTrackedContainerPath(candidate));
         continue;
       }
       const resolved = resolveSourcePathFromContainerPath(candidate);
@@ -72,7 +84,7 @@ export function createObserverWorkspaceTracking(context = {}) {
         continue;
       }
       if (isContainerWorkspacePath(candidate)) {
-        containerWorkspaceTargets.push(normalizeContainerPathForComparison(candidate));
+        containerWorkspaceTargets.push(normalizeTrackedContainerPath(candidate));
         continue;
       }
       hostTargets.push(candidate);

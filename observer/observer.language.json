@@ -1,20 +1,26 @@
 {
   "acknowledgements": {
     "directWorking": [
-      "I'm working on it.",
-      "Let me {{checkVerb}} that for you.",
-      "On it now.",
-      "I'll {{checkVerb}} that now."
+      "Let me think for a minute.",
+      "Give me a minute to think that through.",
+      "Let me sit with that for a minute.",
+      "Let me work that through for a minute."
+    ],
+    "queueChecking": [
+      "Let me get back to you on that one.",
+      "I'll come back to you on that one.",
+      "Let me take that away and come back with it.",
+      "I'll follow up on that one shortly."
     ],
     "queueReady": [
-      "I'm {{readyVerb}} {{taskRef}} {{readyTail}}.",
-      "I've got {{taskRef}} {{queueState}} now.",
-      "I'm {{readyVerb}} {{taskRef}} {{readyTail}}."
+      "Let me get back to you on that one.\n\nI've got {{taskRef}} {{queueState}} for {{destinationLabel}}.",
+      "I'll come back to you on that one.\n\n{{taskRef}} is {{queueState}} for {{destinationLabel}}.",
+      "Let me take that away and come back with it.\n\nI've {{queueVerb}} {{taskRef}} for {{destinationLabel}}."
     ],
     "queueEscalated": [
-      "I'm {{readyVerb}} {{taskRef}} {{readyTail}}.\n\nThen I'll {{handoffVerb}} it to {{destinationLabel}} {{handoffTail}}.",
-      "I've got {{taskRef}} {{queueState}} now.\n\nAfter that I'll {{handoffVerb}} it to {{destinationLabel}} {{handoffTail}}.",
-      "I'm {{readyVerb}} {{taskRef}} {{readyTail}}.\n\nOnce it's set, I'll {{handoffVerb}} it to {{destinationLabel}} {{handoffTail}}."
+      "Let me get back to you on that one.\n\nI'll {{handoffVerb}} {{taskRef}} to {{destinationLabel}} {{handoffTail}}.",
+      "I'll come back to you on that one.\n\nI've got {{taskRef}} {{queueState}} for {{destinationLabel}}.",
+      "Let me take that away and come back with it.\n\n{{destinationLabel}} will handle {{taskRef}} {{queueTail}}."
     ]
   },
   "voice": {

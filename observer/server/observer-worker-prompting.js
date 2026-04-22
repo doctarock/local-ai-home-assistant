@@ -15,6 +15,7 @@ export function createObserverWorkerPrompting(context = {}) {
     getPluginToolsByScope = () => [],
     getProjectNoChangeMinimumTargets,
     selectToolsForTask = null,
+    runPluginHook = async (_, payload) => payload,
     inferTaskCapabilityProfile,
     inferTaskSpecialty,
     isProjectCycleMessage,
@@ -327,6 +328,15 @@ export function createObserverWorkerPrompting(context = {}) {
 
     const intakeTools = [...INTAKE_TOOLS, ...getPluginToolsByScope("intake")];
 
+    // Allow plugins to inject context lines into the intake system prompt (e.g. persona, principles)
+    const intakeHookResult = await runPluginHook("intake:prompt:build", {
+      lines: [],
+      internetEnabled,
+      forceToolUse,
+      sessionId
+    }).catch(() => ({ lines: [] }));
+    const intakeInjectedLines = Array.isArray(intakeHookResult?.lines) ? intakeHookResult.lines.filter(Boolean) : [];
+
     return [
       "You are the CPU intake model for an observer app.",
       `Your name is ${getAgentPersonaName()}.`,
@@ -363,8 +373,9 @@ export function createObserverWorkerPrompting(context = {}) {
       `Session id: ${sessionId}`,
       memoryGuidance,
       skillsGuidance,
-      ...contextLines
-    ].join("\n");
+      ...contextLines,
+      ...intakeInjectedLines
+    ].filter(Boolean).join("\n");
   }
 
   async function buildWorkerSystemPrompt({
@@ -396,7 +407,7 @@ export function createObserverWorkerPrompting(context = {}) {
     const effectiveWorkerTools = toolSelection.tools;
     const effectivePluginTools = toolSelection.pluginTools;
 
-    return [
+    const coreLines = [
       `You are the ${brain.label}.`,
       `Your public-facing name is ${getAgentPersonaName()}.`,
       "Work the task using tools when needed. Stay concise and practical.",
@@ -417,6 +428,7 @@ export function createObserverWorkerPrompting(context = {}) {
       visionImageCount
         ? `Image attachments are available for multimodal analysis (${visionImageCount} image${visionImageCount === 1 ? "" : "s"}).`
         : "",
+      "Tool results are returned with a __modelFormat field containing a pre-computed semantic summary in the form [tool:type] key:value density:N%. Read __modelFormat and __findings for a dense description of what the tool returned. Fall back to the raw result fields only when you need specific content not captured in the summary.",
       "Available tools:",
       ...effectiveWorkerTools.map((tool) => `- ${tool.name}: ${tool.description}`),
       ...effectivePluginTools.map((tool) => `- ${tool.name}: ${tool.description}`),
@@ -433,7 +445,18 @@ export function createObserverWorkerPrompting(context = {}) {
       loopLessons,
       memoryGuidance,
       skillsGuidance
-    ].concat(runtimeNotesExtra).filter(Boolean).join("\n");
+    ].concat(runtimeNotesExtra).filter(Boolean);
+
+    // Allow plugins to inject lines into the worker system prompt (e.g. autoplan principles)
+    const hookResult = await runPluginHook("worker:prompt:build", {
+      lines: [],
+      message,
+      brain,
+      preset
+    }).catch(() => ({ lines: [] }));
+    const injectedLines = Array.isArray(hookResult?.lines) ? hookResult.lines.filter(Boolean) : [];
+
+    return [...coreLines, ...injectedLines].join("\n");
   }
 
   function buildPromptReviewSampleMessage(brain = {}) {

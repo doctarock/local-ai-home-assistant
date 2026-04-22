@@ -1107,7 +1107,7 @@ export function createInternalRegressionRunner({
       };
     }
     if (mode === "queued_task_execution_prompt") {
-      const rendered = buildQueuedTaskExecutionPrompt(
+      const rendered = await buildQueuedTaskExecutionPrompt(
         String(testCase.taskPrompt || "").trim(),
         testCase.task || {}
       );

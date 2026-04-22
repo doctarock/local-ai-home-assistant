@@ -1084,10 +1084,10 @@ function triagePromptLocally({ message, brain }) {
   if (multiStep) complexity += 2;
 
   if (asksForCode) {
-    return { predictedMode: "queue", ack: "Let me check.", complexity };
+    return { predictedMode: "queue", ack: "Let me get back to you on that one.", complexity };
   }
   if (brain?.id === "fast" && complexity >= 5) {
-    return { predictedMode: "queue", ack: "Let me find out for you.", complexity };
+    return { predictedMode: "queue", ack: "Let me get back to you on that one.", complexity };
   }
   return { predictedMode: "direct", ack: "", complexity };
 }
@@ -1414,7 +1414,7 @@ function speakWakeAcknowledgement(text) {
 function queueAcknowledgement(text) {
   let message = String(text || "").trim();
   if (message === "Iâ€™m working on it." || message === "I'm working on it.") {
-    message = pickLanguageVariant("acknowledgements.directWorking", "I'm working on it.");
+    message = pickLanguageVariant("acknowledgements.directWorking", "Let me think for a minute.");
   }
   if (!message) {
     return;
@@ -2999,7 +2999,7 @@ function addBrainEndpointDraft() {
   }
   brainConfigDraft.brains.endpoints[endpointId] = {
     label: `LAN Ollama ${index}`,
-    baseUrl: `http://192.168.1.${100 + index}:11434`
+    baseUrl: `http://192.168.0.${70 + index}:11434`
   };
   renderBrainConfigEditor();
 }

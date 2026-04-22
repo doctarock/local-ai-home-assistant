@@ -372,7 +372,7 @@ export function createObserverQueueProcessor(context = {}) {
           runResponse = await executeRecreationJob(inProgressTask);
         } else {
           runResponse = await executeObserverRun({
-            message: buildQueuedTaskExecutionPrompt(taskPrompt, inProgressTask),
+            message: await buildQueuedTaskExecutionPrompt(taskPrompt, inProgressTask),
             sessionId: `${inProgressTask.sessionId}-task-${inProgressTask.id}`,
             brain,
             internetEnabled: Boolean(inProgressTask.internetEnabled),

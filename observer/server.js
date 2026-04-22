@@ -231,14 +231,31 @@ function isTrustedLocalOrigin(origin = "") {
   }
 }
 
+function isTrustedSameHostOrigin(origin = "", req = {}) {
+  const normalized = String(origin || "").trim();
+  const requestHost = String(req.headers?.host || "").trim().toLowerCase();
+  if (!normalized || !requestHost) {
+    return false;
+  }
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    return String(parsed.host || "").trim().toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
+}
+
 function isTrustedLocalRequestOrigin(req = {}) {
   const origin = String(req.headers?.origin || "").trim();
   const referer = String(req.headers?.referer || "").trim();
   if (origin) {
-    return isTrustedLocalOrigin(origin);
+    return isTrustedLocalOrigin(origin) || isTrustedSameHostOrigin(origin, req);
   }
   if (referer) {
-    return isTrustedLocalOrigin(referer);
+    return isTrustedLocalOrigin(referer) || isTrustedSameHostOrigin(referer, req);
   }
   return false;
 }
@@ -255,10 +272,11 @@ function isValidAdminToken(value = "") {
 }
 
 function validateAdminRequest(req = {}) {
-  if (!isLoopbackRequest(req)) {
+  const hasTrustedOrigin = isTrustedLocalRequestOrigin(req);
+  if (!isLoopbackRequest(req) && !hasTrustedOrigin) {
     return false;
   }
-  if (!isSafeRequestMethod(req.method) && !isTrustedLocalRequestOrigin(req)) {
+  if (!isSafeRequestMethod(req.method) && !hasTrustedOrigin) {
     return false;
   }
   const token = String(req.headers?.["x-admin-token"] || "").trim();
@@ -300,7 +318,7 @@ function checkSlidingWindowRateLimit(req = {}, {
 }
 
 app.get("/api/admin-token", (req, res) => {
-  if (!isLoopbackRequest(req) || !isTrustedLocalRequestOrigin(req)) {
+  if (!isTrustedLocalRequestOrigin(req)) {
     return res.status(403).json({ ok: false, error: "Forbidden" });
   }
   res.json({ ok: true, token: ADMIN_UI_TOKEN });
@@ -2899,7 +2917,13 @@ const {
   isProjectCycleMessage: (...args) => getProjectsRuntime()?.isProjectCycleMessage?.(...args),
   isProjectCycleTask: (...args) => getProjectsRuntime()?.isProjectCycleTask?.(...args),
   inferTaskSpecialty: (...args) => inferTaskSpecialty(...args),
-  summarizeTaskCapabilities: (...args) => summarizeTaskCapabilities(...args)
+  summarizeTaskCapabilities: (...args) => summarizeTaskCapabilities(...args),
+  runPluginHook: async (hookName, payload) => {
+    if (pluginManager && typeof pluginManager.runHook === "function") {
+      return pluginManager.runHook(hookName, payload);
+    }
+    return payload;
+  }
 });
 
 async function chooseAutomaticRetryBrainId(task = {}, failureClassification = "") {
@@ -3487,6 +3511,17 @@ async function createQueuedTask({
     type: "task.queued",
     task: queuedTask
   });
+  // Let plugins react to new task creation (sprint correlation, calendar logging, etc.)
+  pluginManager.runHook("queue:task-created", {
+    at: Date.now(),
+    taskId: queuedTask.id,
+    codename: queuedTask.codename,
+    message: compactHookText(String(queuedTask.message || "").trim(), 220),
+    sessionId: String(queuedTask.sessionId || "Main").trim(),
+    brainId: String(queuedTask.requestedBrainId || "").trim(),
+    queueLane: String(queuedTask.queueLane || "").trim(),
+    internalJobType: String(queuedTask.internalJobType || "").trim()
+  }).catch(() => {});
   scheduleTaskDispatch();
   return queuedTask;
 }
@@ -4357,6 +4392,16 @@ async function planIntakeWithBitNet({
     action,
     replyText: rawReplyText
   });
+  // Let plugins observe direct replies (session-memory, analytics, etc.)
+  if (action === "reply_only" || action === "clarify") {
+    pluginManager.runHook("intake:reply-complete", {
+      at: Date.now(),
+      action,
+      sessionId: String(sessionId || "Main").trim(),
+      messagePreview: compactHookText(String(message || "").trim(), 200),
+      replyPreview: compactHookText(String(replyText || "").trim(), 300)
+    }).catch(() => {});
+  }
   return {
     replyText,
     action,
@@ -4772,6 +4817,12 @@ const {
   fs,
   getPluginToolsByScope: collectPluginToolsSync,
   selectToolsForTask,
+  runPluginHook: async (hookName, payload) => {
+    if (pluginManager && typeof pluginManager.runHook === "function") {
+      return pluginManager.runHook(hookName, payload);
+    }
+    return payload;
+  },
   loopLessonsHostPath: path.join(PROMPT_FILES_ROOT, "LOOP-LESSONS.md"),
   buildTaskCapabilityPromptLines,
   extractConcreteTaskFileTargets,
@@ -4849,7 +4900,13 @@ const { executeObserverRun: executeObserverRun } = createObserverExecutionRunner
   sanitizeSkillSlug,
   appendRepairLesson,
   OBSERVER_CONTAINER_WORKSPACE_ROOT,
-  loopLessonsHostPath: path.join(PROMPT_FILES_ROOT, "LOOP-LESSONS.md")
+  loopLessonsHostPath: path.join(PROMPT_FILES_ROOT, "LOOP-LESSONS.md"),
+  runPluginHook: async (hookName, payload) => {
+    if (pluginManager && typeof pluginManager.runHook === "function") {
+      return pluginManager.runHook(hookName, payload);
+    }
+    return payload;
+  }
 });
 
 const { selectDispatchableQueuedTask } = createObserverQueueDispatchSelection({
