@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-04-29
+## 2026-04-29 1.2.0
 
 ### Added
 - Added Home Assistant / IoT support with secure instance registry and token handling.
