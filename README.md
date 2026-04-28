@@ -7,6 +7,7 @@
 - [Compression Quick Reference](docs/COMPRESSION_QUICK_REFERENCE.md)
 - [Semantic Compression Quick Start](docs/SEMANTIC_COMPRESSION_QUICK_START.md)
 - [Tool Loop Compression Guide](docs/TOOL_LOOP_COMPRESSION_GUIDE.md)
+- [Changelog](CHANGELOG.md)
 
 
 ## Plugins
@@ -27,6 +28,7 @@ Nova is a host-side AI orchestration application that combines:
 - Secure sandboxed tool execution in Docker
 - Retrieval and document intelligence (Qdrant-backed)
 - A plugin system for extending capabilities
+- Home Assistant / IoT integration with secure instance management and device control tools
 - Voice interface with trust-based command gating
 
 It is designed to run continuously as an autonomous or semi-autonomous operator while still allowing direct user supervision.
@@ -39,7 +41,7 @@ The web UI includes dedicated tabs for:
 - `Nova` — identity, voice preferences, questions, trust records
 - `Queue` — queued/in-progress/done/failed tasks, repairs, issues, schedules, history
 - `Brains` — model status, endpoints, base brains, specialists, routing config
-- `Secrets` — keychain handles for retrieval, mail, and custom secrets
+- `Secrets` — keychain handles for retrieval, mail, IoT, and custom secrets
 - `Capabilities` — tool catalog, installed skills, capability request tracking
 - `Plugins` — installed plugins, interfaces, operations
 - `System` — gateway health, intake state, SSE logs, regression test runner
@@ -54,6 +56,7 @@ The system supports:
 - Prompt rewrite assistance using idle helper brains
 - Optional worker preflight for ambiguity checks and clarification
 - Multi-specialist routing across local and remote Ollama endpoints
+- Secure IoT / Home Assistant instance registration and worker tools for device discovery, state readout, and service calls
 
 ### 2.3 Queue and Task Lifecycle
 
@@ -75,6 +78,7 @@ Voice functionality includes:
 - Threshold-based trust profile matching
 - Command allow/block decisions using configured minimum voice trust level
 - Persisted trust records that unify email and voice identity concepts
+- Voice invitation flow for waiting tasks with yes/acknowledge acceptance and question time support
 
 ### 2.5 3D Avatar and Visual Stage
 
@@ -84,6 +88,7 @@ Avatar system includes:
 - Stylization presets/effects (post-processing pipeline)
 - Configurable room textures/backgrounds
 - Configurable prop slots and model placement
+- Scene addon extension points for custom visual effects and runtime integrations
 
 ## 3. Automation and Background Intelligence
 
@@ -151,6 +156,7 @@ Plugins extend the observer at runtime without modifying core code:
 - Dynamic plugin loading from the plugins directory
 - Interface and operation registration
 - Plugin inventory visible in the Plugins UI tab
+- Runtime hook and lifecycle events for queue and worker execution telemetry
 - See [Plugin System Developer Guide](docs/PLUGIN-SYSTEM.md) for authoring details
 
 ## 7. Semantic Compression
@@ -177,6 +183,7 @@ Tool execution is isolated in a Docker container with:
 Secrets are managed via OS keychain (`keytar`) with handles for:
 - Mail agent passwords
 - Retrieval/Qdrant API key
+- IoT/Home Assistant long-lived access tokens
 - Custom handles
 
 ### 8.3 Trust Controls
