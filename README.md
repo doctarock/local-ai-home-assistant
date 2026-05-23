@@ -9,6 +9,7 @@
 
 ## Plugins
 
+- https://github.com/doctarock/Governance-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Code-Review-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Auto-plan-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Browser-Plugin-for-Home-Assistant-playwright-
