@@ -1,6 +1,3 @@
-# Claude Code local settings (contains machine-specific paths)
-.claude/settings.local.json
-
 # OS/editor cruft
 .DS_Store
 Thumbs.db
@@ -22,17 +19,25 @@ pnpm-debug.log*
 
 # Dependencies
 node_modules/
-observer/node_modules/
+nova-observer/node_modules/
 
 # Observer runtime/output
 observer-output/
-observer/.observer-runtime/
-observer-task-queue/
-**/observer-task-queue/
+nova-observer/.derpy-observer-runtime/
+nova-observer/.observer-runtime/
+nova-observer/.agent-workspaces/
+derpy-observer-task-queue/
+**/derpy-observer-task-queue/
+
+# Local plugin vendor binaries/models
+nova-observer/server/plugins/multilingual-voice/vendor/whisper/
+nova-observer/server/plugins/multilingual-voice/vendor/ffmpeg/
+nova-observer/server/plugins/multilingual-voice/vendor/models/
+!nova-observer/server/plugins/multilingual-voice/vendor/README.md
 
 # Temp files
 .tmp-live-*.json
 .tmp-live-*.md
 .tmp-task-*.json
 .tmp-cron-jobs*.json
-observer/.tmp-run-*.log
+nova-observer/.tmp-run-*.log

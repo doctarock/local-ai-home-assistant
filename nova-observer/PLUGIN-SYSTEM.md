@@ -65,9 +65,12 @@ Built-ins are loaded first from `server/plugins/*-plugin.js`.
 
 Current built-ins:
 
-- `security-plugin.js`
+- `tool-orchestration-plugin.js`
+- `permission-rules-plugin.js`
 - `task-lifecycle-plugin.js`
+- `cron-hardening-plugin.js`
 - `session-memory-plugin.js`
+- `hook-explorer-plugin.js`
 
 ### 4.2 Auto-discovered plugin files
 
@@ -315,14 +318,21 @@ Current subsystem names include:
 - `intake`
 - `queue`
 - `cron`
+- `calendar`
+- `todo`
 - `mail`
+- `finance`
+- `projects`
+- `pipeline`
 - `runtime`
 - `events`
+- `state`
 - `output`
 - `tests`
 - `tools`
 - `secrets`
 - `plugins`
+- `wordpress`
 - `brains`
 - `config`
 - `voice`
@@ -340,13 +350,60 @@ Examples:
   - `observer:event:<event-type>`
   - `subsystem:<name>:event`
 - Intake decision points:
+  - `intake:request:received`
+  - `intake:agent:run:request:received`
+  - `intake:tasks:triage:request:received`
   - `subsystem:intake:triage-started`
   - `subsystem:intake:triage-completed`
   - `subsystem:intake:triage-failed`
 - Voice annotation:
   - `subsystem:voice:response-annotated`
+- Project pipeline lifecycle:
+  - `subsystem:pipeline:collection-build-started`
+  - `subsystem:pipeline:collection-build-completed`
+  - `subsystem:pipeline:collection-build-failed`
+  - `subsystem:projects:pipelines-list-started`
+  - `subsystem:projects:pipelines-list-completed`
+  - `subsystem:projects:pipelines-list-failed`
+  - `subsystem:projects:pipeline-trace-started`
+  - `subsystem:projects:pipeline-trace-completed`
+  - `subsystem:projects:pipeline-trace-failed`
 
-### 9.4 Cross-plugin contracts using hooks
+### 9.4 Browser voice extension events
+
+Plugins with browser UI modules can extend the built-in voice path without replacing core files. These are DOM `CustomEvent`s emitted on `window`:
+
+- `observer:voice:toggle-requested`: cancelable. A plugin can call `event.preventDefault()` to handle the main voice button itself.
+- `observer:voice:state-changed`: emitted when the built-in browser voice recognizer is enabled or disabled.
+- `observer:voice:recognition-configure`: emitted after `SpeechRecognition` is created. Plugins may adjust properties such as `event.detail.recognition.lang`.
+- `observer:voice:listening-start-requested`: cancelable. Plugins may prevent the browser recognizer from starting for a custom provider.
+- `observer:voice-transcript`: emitted for recognized transcript segments.
+- `observer:voice:before-submit`: cancelable and async-capable via `event.detail.respondWith(...)`.
+
+`observer:voice:before-submit` is the main integration point for multilingual or custom capture plugins. A listener can translate, replace, cancel, or fully handle a voice submission:
+
+```js
+window.addEventListener("observer:voice:before-submit", (event) => {
+  event.detail.respondWith((async () => {
+    const result = await fetch("/api/plugins/multilingual-voice/transcribe", {
+      method: "POST",
+      body: buildAudioFormDataSomehow()
+    }).then((res) => res.json());
+    return {
+      text: result.englishText,
+      metadata: {
+        voiceProvider: "multilingual-voice",
+        detectedLanguage: result.detectedLanguage,
+        originalText: result.originalText
+      }
+    };
+  })());
+});
+```
+
+Server-side intake hooks receive a mutable payload and may return a replacement payload before normal intake runs. Use `intake:request:received` for all intake routes, or `intake:agent:run:request:received` / `intake:tasks:triage:request:received` for route-specific behavior. A translation plugin can replace `payload.message` and add provenance under `payload.metadata`.
+
+### 9.5 Cross-plugin contracts using hooks
 
 Recommended pattern for extensibility:
 

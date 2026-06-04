@@ -148,7 +148,7 @@
 │                         FILE STRUCTURE                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  openclaw-observer/server/                                                  │
+│  nova-observer/server/                                                      │
 │  ├── output-semantic-compression.js                                         │
 │  │   └─ Core compression logic (AST, shell analysis, semantic maps)        │
 │  │                                                                          │

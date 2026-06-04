@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-06-04 1.4.0
+
+### Added
+- Added a sandbox state store so prompt memory, personal files, and agent workspace state can be read and written through the live Nova sandbox volume.
+- Added a State Lens manifest with grouped sandbox, boundary, queue, runtime, config, and public UI inspection scopes.
+- Added state-browser file deletion with admin-token protection and container/host file handling.
+- Added voice extension events for recognition configuration, listening lifecycle, voice toggles, transcript handling, and pre-submit request transformation.
+- Added intake request hooks so plugins can observe or reshape triage and agent-run submissions before routing.
+- Added phone-number trust records alongside email and voice trust identity.
+- Added regression coverage for sandbox inspect path resolution, failed project-work attempt counting, and Ollama queue-lane concurrency.
+
+### Changed
+- Renamed the observer package, sandbox runtime identity, paths, users, prompts, regression fixtures, and UI storage keys from OpenClaw to Nova.
+- Simplified the Docker image to provision the Nova runtime user and Playwright without installing or patching the previous OpenClaw runtime.
+- Moved prompt-state persistence to the authoritative sandbox volume for memory, dreaming, session-memory, and prompt workspace operations.
+- Expanded the developer-tools state browser to load scopes from the server manifest and browse live sandbox prompt files, memory, projects, skills, input, and output.
+- Improved voice capture so source identity is tied to transcript segments and submission metadata is preserved for queued voice requests.
+- Improved provider runtime scheduling so CPU and GPU Ollama lanes sharing a base URL can run independently while same-lane GPU calls stay serialized.
+- Reduced task heartbeat/orphan timing and intake lease waits to make stalled work detection more responsive.
+
+### Fixed
+- Prevented sandbox inspection path resolution from escaping the selected inspect root.
+- Prevented quiet-mode idle scan and cleanup reports from surfacing as normal assistant updates.
+- Fixed admin-only task reshape reset calls to use the configured admin fetch path.
+- Updated low-signal completion detection, tool-loop repair, and worker prompting to recognize Nova sandbox paths and skill-library naming.
+
 ## 2026-05-20 1.3.0
 
 ### Added

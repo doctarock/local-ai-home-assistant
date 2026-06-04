@@ -1,7 +1,7 @@
 FROM node:22-slim
 
-ARG OPENCLAW_UID=1001
-ARG OPENCLAW_GID=1001
+ARG NOVA_UID=1001
+ARG NOVA_GID=1001
 
 # Install system deps for npm/git and Playwright Chromium
 USER root
@@ -36,29 +36,30 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Create a stable non-root user and pre-seed the sandbox state layout.
-RUN groupadd --gid ${OPENCLAW_GID} openclaw \
- && useradd -m --uid ${OPENCLAW_UID} --gid ${OPENCLAW_GID} openclaw \
- && install -d -o ${OPENCLAW_UID} -g ${OPENCLAW_GID} \
-    /home/openclaw/.observer-sandbox \
-    /home/openclaw/.observer-sandbox/workspace \
-    /home/openclaw/.observer-sandbox/workspace/memory \
-    /home/openclaw/.observer-sandbox/workspace/memory/questions \
-    /home/openclaw/.observer-sandbox/workspace/memory/personal \
-    /home/openclaw/.observer-sandbox/workspace/memory/briefings \
-    /home/openclaw/.observer-sandbox/workspace/skills \
-    /home/openclaw/observer-output
+RUN groupadd --gid ${NOVA_GID} nova \
+ && useradd -m --uid ${NOVA_UID} --gid ${NOVA_GID} nova \
+ && install -d -o ${NOVA_UID} -g ${NOVA_GID} \
+    /home/nova/.observer-sandbox \
+    /home/nova/.observer-sandbox/workspace \
+    /home/nova/.observer-sandbox/workspace/memory \
+    /home/nova/.observer-sandbox/workspace/memory/questions \
+    /home/nova/.observer-sandbox/workspace/memory/personal \
+    /home/nova/.observer-sandbox/workspace/memory/briefings \
+    /home/nova/.observer-sandbox/workspace/skills \
+    /home/nova/observer-output
 
-USER openclaw
-WORKDIR /home/openclaw
+USER nova
+WORKDIR /home/nova
 
-COPY patch-openclaw.mjs /tmp/patch-openclaw.mjs
+# Install user-owned tool/runtime dependencies for observer sandbox jobs.
+RUN npm config set prefix /home/nova/.npm-global \
+ && npm install -g playwright \
+ && /home/nova/.npm-global/bin/playwright install chromium
 
-# Install OpenClaw via npm into a user-owned prefix
-RUN npm config set prefix /home/openclaw/.npm-global \
- && npm install -g openclaw playwright \
- && /home/openclaw/.npm-global/bin/playwright install chromium \
- && node /tmp/patch-openclaw.mjs
+USER root
+RUN ln -sf /home/nova/.npm-global/bin/playwright /usr/local/bin/playwright
 
-ENV PATH="/home/openclaw/.npm-global/bin:${PATH}"
+USER nova
+ENV PATH="/home/nova/.npm-global/bin:${PATH}"
 
-CMD ["openclaw", "--help"]
+CMD ["node", "--version"]

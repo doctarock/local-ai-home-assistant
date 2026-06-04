@@ -5,7 +5,7 @@ These notes were verified on this machine from `C:\AI\repositories\DerpyClaw\loc
 ## What Was Installed
 
 - Repository: `doctarock/local-ai-home-assistant`
-- Node dependencies in `observer/node_modules`
+- Node dependencies in `nova-observer/node_modules`
 - Qdrant Docker service from `docker-compose.yml`
 - Observer UI running at `http://127.0.0.1:3220`
 
@@ -14,7 +14,7 @@ These notes were verified on this machine from `C:\AI\repositories\DerpyClaw\loc
 - Node.js 18 or newer. This machine is using Node `v24.14.0`.
 - npm. On Windows PowerShell, use `npm.cmd` if `npm.ps1` is blocked by execution policy.
 - Docker Desktop, running Linux containers.
-- Optional: Ollama at `http://127.0.0.1:11434` with the models named in `observer/observer.config.json`.
+- Optional: Ollama at `http://127.0.0.1:11434` with the models named in `nova-observer/observer.config.json`.
 
 ## Install From Scratch
 
@@ -29,7 +29,7 @@ cd .\local-ai-home-assistant-main
 Install the observer dependencies:
 
 ```powershell
-cd .\observer
+cd .\nova-observer
 npm.cmd install
 ```
 
@@ -47,7 +47,7 @@ docker compose up -d qdrant
 Start the observer:
 
 ```powershell
-cd C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\observer
+cd C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer
 $env:QDRANT_URL = "http://127.0.0.1:6333"
 node server.js
 ```
@@ -63,7 +63,7 @@ The observer defaults are:
 - UI port: `3220`, controlled by `PORT`
 - Qdrant URL: `http://127.0.0.1:6333`, controlled by `QDRANT_URL`
 - Qdrant collection: `observer_chunks`, controlled by `QDRANT_COLLECTION`
-- Local Ollama endpoint: `http://127.0.0.1:11434`, configured in `observer/observer.config.json`
+- Local Ollama endpoint: `http://127.0.0.1:11434`, configured in `nova-observer/observer.config.json`
 
 ## Background Run On Windows
 
@@ -72,9 +72,9 @@ To run the observer in the background and write logs beside the app:
 ```powershell
 Start-Process -FilePath node `
   -ArgumentList 'server.js' `
-  -WorkingDirectory 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\observer' `
-  -RedirectStandardOutput 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\observer\observer.out.log' `
-  -RedirectStandardError 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\observer\observer.err.log' `
+  -WorkingDirectory 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer' `
+  -RedirectStandardOutput 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer\observer.out.log' `
+  -RedirectStandardError 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer\observer.err.log' `
   -WindowStyle Hidden
 ```
 
@@ -108,7 +108,7 @@ The default config references models such as:
 - `gemma4:26b`
 - `gemma3:1b`
 
-Install or edit these in `observer/observer.config.json` to match your local Ollama setup.
+Install or edit these in `nova-observer/observer.config.json` to match your local Ollama setup.
 
 ## Notes From This Install
 
@@ -118,4 +118,3 @@ Install or edit these in `observer/observer.config.json` to match your local Oll
   - `task-lifecycle-plugin.js`
   - `session-memory-plugin.js`
 - The app continued running despite those plugin warnings.
-

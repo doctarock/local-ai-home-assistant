@@ -248,11 +248,11 @@ Trust settings are under the Nova tab.
 ## Current Setup
 
 - Repo root: `<your-repo-path>`
-- Observer app: `observer/`
+- Observer app: `nova-observer/`
 - Observer URL: `http://127.0.0.1:3220/`
-- Observer server entry: `observer/server.js`
-- Observer config: `observer/observer.config.json`
-- Observer runtime root: `observer/.observer-runtime`
+- Observer server entry: `nova-observer/server.js`
+- Observer config: `nova-observer/observer.config.json`
+- Observer runtime root: `nova-observer/.derpy-observer-runtime`
 - User-facing output folder: `<your-repo-path>/observer-output`
 
 ## Runtime Shape
@@ -260,7 +260,7 @@ Trust settings are under the Nova tab.
 The observer process runs directly on the host:
 
 - launch command: `node server.js`
-- working directory: `observer/`
+- working directory: `nova-observer/`
 - it owns:
   - the web UI
   - the scheduler
@@ -275,12 +275,12 @@ The LLM does not get host shell access directly. Tool execution is isolated in D
 
 The LLM tool sandbox is the important security boundary.
 
-- container name: `observer-sandbox`
-- image name: `openclaw-safe`
-- named volume: `observer-sandbox-state`
-- container home: `/home/openclaw`
-- internal working workspace: `/home/openclaw/.observer-sandbox/workspace`
-- host output export mount: `/home/openclaw/observer-output`
+- container name: `derpy-observer-sandbox`
+- image name: `nova-safe`
+- named volume: `derpy-observer-sandbox-state`
+- container home: `/home/nova`
+- internal working workspace: `/home/nova/.observer-sandbox/workspace`
+- host output export mount: `/home/nova/observer-output`
 
 The observer creates this container automatically on startup if needed.
 
@@ -290,20 +290,20 @@ When adding or restoring a built-in tool for Nova, treat it as a runtime feature
 
 Required checks:
 
-- if the tool shells out to a system command, that command must exist inside the `openclaw-safe` image, not just on the host
+- if the tool shells out to a system command, that command must exist inside the `nova-safe` image, not just on the host
 - if the tool depends on a language runtime, library, or binary, install that dependency in `Dockerfile`
 - keep the tool name in code, prompts, and diagnostics aligned with the real callable name
 - make sure the tool is present in the observer tool catalog so the worker prompt and approval state can expose it
-- rebuild `openclaw-safe` after changing runtime dependencies
-- replace or recreate `observer-sandbox` so the live observer stops using the old image
-- verify the dependency inside the running sandbox with `docker exec observer-sandbox sh -lc "command -v <tool>"`
+- rebuild `nova-safe` after changing runtime dependencies
+- replace or recreate `derpy-observer-sandbox` so the live observer stops using the old image
+- verify the dependency inside the running sandbox with `docker exec derpy-observer-sandbox sh -lc "command -v <tool>"`
 - verify the tool path end-to-end with one real sandboxed call before trusting overnight autonomy
 
 Recent example:
 
 - `unzip` existed in `server.js`, but the sandbox image did not contain `/usr/bin/unzip`
 - result: Nova could see unzip-related work in project input, but runtime execution failed or drifted into bogus capability/missing-tool conclusions
-- fix: install `zip` and `unzip` in `Dockerfile`, rebuild `openclaw-safe`, and let the observer recreate `observer-sandbox`
+- fix: install `zip` and `unzip` in `Dockerfile`, rebuild `nova-safe`, and let the observer recreate `derpy-observer-sandbox`
 
 ### Sandbox flags
 
@@ -319,8 +319,8 @@ The container is started with:
 
 Current caveat:
 
-- the sandbox is expected to run as the non-root `openclaw` user
-- on startup, the observer may launch a short host-managed bootstrap container as root only to repair ownership inside the named state volume, then it starts the actual AI sandbox as `openclaw`
+- the sandbox is expected to run as the non-root `nova` user
+- on startup, the observer may launch a short host-managed bootstrap container as root only to repair ownership inside the named state volume, then it starts the actual AI sandbox as `nova`
 - the AI-controlled sandbox still remains constrained by the read-only filesystem, dropped capabilities, no-new-privileges, tmpfs `/tmp`, and restricted mounts
 
 ### Sandbox mounts
@@ -328,11 +328,11 @@ Current caveat:
 The live sandbox is allowed to access exactly three locations:
 
 - writable input share:
-  - `<your-repo-path>/observer-input` -> `/home/openclaw/observer-input`
+  - `<your-repo-path>/observer-input` -> `/home/nova/observer-input`
 - writable sandbox workspace:
-  - Docker named volume `observer-sandbox-state` -> `/home/openclaw/.observer-sandbox/workspace`
+  - Docker named volume `derpy-observer-sandbox-state` -> `/home/nova/.observer-sandbox/workspace`
 - writable output share:
-  - `<your-repo-path>/observer-output` -> `/home/openclaw/observer-output`
+  - `<your-repo-path>/observer-output` -> `/home/nova/observer-output`
 
 No other host bind mounts are allowed into the Nova runtime sandbox.
 
@@ -352,13 +352,13 @@ This is why the sandbox exists at all. Do not break the observer back out into d
 
 Containers that should normally exist:
 
-- `observer-sandbox` (created dynamically by the observer on startup)
+- `derpy-observer-sandbox` (created dynamically by the observer on startup)
 - `nova-qdrant` (via docker-compose)
 - Ollama (managed separately)
 
 ## Models and Brains
 
-Enabled brains in `observer/observer.config.json`:
+Enabled brains in `nova-observer/observer.config.json`:
 
 **Built-in (local):**
 - `intake` — Gemma 4 E4B, local Ollama, conversation and direct replies
@@ -377,7 +377,7 @@ Enabled brains in `observer/observer.config.json`:
 
 ## Mail
 
-Mail polling is configured in `observer/observer.config.json` and handled by the observer process.
+Mail polling is configured in `nova-observer/observer.config.json` and handled by the observer process.
 
 - IMAP host: `mail.example.com`
 - SMTP host: `mail.example.com`
@@ -395,7 +395,7 @@ The observer supports:
 
 The queue is local to this observer and stored under:
 
-- `observer/.observer-runtime/observer-task-queue`
+- `nova-observer/.derpy-observer-runtime/derpy-observer-task-queue`
 
 Task folders:
 
@@ -416,13 +416,13 @@ Examples of internal recurring jobs:
 
 Editable prompt/memory files on the host:
 
-- `observer/workspace-prompt-edit/AGENTS.md`
-- `observer/workspace-prompt-edit/TOOLS.md`
-- `observer/workspace-prompt-edit/SOUL.md`
-- `observer/workspace-prompt-edit/USER.md`
-- `observer/workspace-prompt-edit/MEMORY.md`
-- `observer/workspace-prompt-edit/PERSONAL.md`
-- `observer/workspace-prompt-edit/memory/...`
+- `nova-observer/.agent-workspaces/nova/prompt-files/AGENTS.md`
+- `nova-observer/.agent-workspaces/nova/prompt-files/TOOLS.md`
+- `nova-observer/.agent-workspaces/nova/prompt-files/SOUL.md`
+- `nova-observer/.agent-workspaces/nova/prompt-files/USER.md`
+- `nova-observer/.agent-workspaces/nova/prompt-files/MEMORY.md`
+- `nova-observer/.agent-workspaces/nova/prompt-files/PERSONAL.md`
+- `nova-observer/.agent-workspaces/nova/memory/...`
 
 These are copied into the sandbox workspace as seed content.
 
@@ -431,15 +431,15 @@ These are copied into the sandbox workspace as seed content.
 Host side:
 
 - repo root: `<your-repo-path>`
-- observer app: `<your-repo-path>/observer`
+- observer app: `<your-repo-path>/nova-observer`
 - output folder: `<your-repo-path>/observer-output`
-- runtime state: `<your-repo-path>/observer/.observer-runtime`
+- runtime state: `<your-repo-path>/nova-observer/.derpy-observer-runtime`
 
 Sandbox side:
 
-- workspace: `/home/openclaw/.observer-sandbox/workspace`
-- input: `/home/openclaw/observer-input`
-- output: `/home/openclaw/observer-output`
+- workspace: `/home/nova/.observer-sandbox/workspace`
+- input: `/home/nova/observer-input`
+- output: `/home/nova/observer-output`
 
 ## Recommended Bring-Up
 
@@ -452,7 +452,7 @@ wsl --status
 Build the sandbox image from the repo root:
 
 ```powershell
-docker build -t openclaw-safe .
+docker build -t nova-safe .
 ```
 
 Then start Qdrant and the observer:
@@ -462,7 +462,7 @@ cd <your-repo-path>
 docker compose up -d qdrant
 
 $env:QDRANT_URL="http://127.0.0.1:6333"
-cd <your-repo-path>\observer
+cd <your-repo-path>\nova-observer
 node server.js
 ```
 
@@ -476,7 +476,7 @@ Then verify:
 
 ## What Must Be Updated
 
-- host paths in `observer/observer.config.json`
+- host paths in `nova-observer/observer.config.json`
 - mail credentials via the Secrets tab (stored in OS keychain via keytar)
 - Ollama endpoint URLs if your LAN IPs differ from the defaults in config
 
