@@ -1,7 +1,5 @@
 # Local AI Home Assistant Installation
 
-These notes were verified on this machine from `C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main`.
-
 ## What Was Installed
 
 - Repository: `doctarock/local-ai-home-assistant`
@@ -40,7 +38,7 @@ If `npm install` works in your shell, that is fine too. `npm.cmd` avoids PowerSh
 Start Qdrant from the repository root:
 
 ```powershell
-cd C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main
+cd [working directory]
 docker compose up -d qdrant
 ```
 
