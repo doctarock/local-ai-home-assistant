@@ -973,7 +973,7 @@ function normalizeToolCallRecord(toolCall, index = 0) {
 }
 
 function normalizeToolName(name = "") {
-  return String(name || "")
+  const normalized = String(name || "")
     .trim()
     .toLowerCase()
     .replace(/^functions?[.:/]/, "")
@@ -982,12 +982,27 @@ function normalizeToolName(name = "") {
     .replace(/^tool[._-]/, "")
     .replace(/-/g, "_")
     .replace(/\s+/g, "_");
+  const aliases = {
+    list_directory: "list_files",
+    list_dir: "list_files",
+    directory_list: "list_files",
+    dir: "list_files",
+    ls: "list_files",
+    read: "read_document",
+    read_doc: "read_document",
+    read_text: "read_document",
+    write: "write_file",
+    edit: "edit_file",
+    move: "move_path",
+    rename: "move_path"
+  };
+  return aliases[normalized] || normalized;
 }
 
 function extractInspectionTargetKey(toolName = "", args = {}) {
   const normalizedTool = normalizeToolName(toolName);
   if (["list_files", "read_document", "read_file"].includes(normalizedTool)) {
-    return compactTaskText(String(args.path || args.url || "").trim(), 240);
+    return compactTaskText(String(args.path || args.file_path || args.filePath || args.filepath || args.target || args.file || args.filename || args.url || "").trim(), 240);
   }
   if (normalizedTool === "web_fetch") {
     return compactTaskText(String(args.url || "").trim(), 240);

@@ -2,14 +2,14 @@
 
 ## What Was Installed
 
-- Repository: `doctarock/local-ai-home-assistant`
+- Repository: `doctarock/Nova-Assistant`
 - Node dependencies in `nova-observer/node_modules`
 - Qdrant Docker service from `docker-compose.yml`
 - Observer UI running at `http://127.0.0.1:3220`
 
 ## Requirements
 
-- Node.js 18 or newer. This machine is using Node `v24.14.0`.
+- Node.js 18 or newer.
 - npm. On Windows PowerShell, use `npm.cmd` if `npm.ps1` is blocked by execution policy.
 - Docker Desktop, running Linux containers.
 - Optional: Ollama at `http://127.0.0.1:11434` with the models named in `nova-observer/observer.config.json`.
@@ -19,9 +19,9 @@
 From the folder where you want the project:
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/doctarock/local-ai-home-assistant/archive/refs/heads/main.zip -OutFile local-ai-home-assistant-main.zip
-Expand-Archive -Path local-ai-home-assistant-main.zip -DestinationPath . -Force
-cd .\local-ai-home-assistant-main
+Invoke-WebRequest -Uri https://github.com/doctarock/Nova-Assistant/archive/refs/heads/main.zip -OutFile Nova-Assistant-main.zip
+Expand-Archive -Path Nova-Assistant-main.zip -DestinationPath . -Force
+cd .\Nova-Assistant-main
 ```
 
 Install the observer dependencies:
@@ -45,7 +45,7 @@ docker compose up -d qdrant
 Start the observer:
 
 ```powershell
-cd C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer
+cd [your-install-path]\Nova-Assistant-main\nova-observer
 $env:QDRANT_URL = "http://127.0.0.1:6333"
 node server.js
 ```
@@ -70,9 +70,9 @@ To run the observer in the background and write logs beside the app:
 ```powershell
 Start-Process -FilePath node `
   -ArgumentList 'server.js' `
-  -WorkingDirectory 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer' `
-  -RedirectStandardOutput 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer\observer.out.log' `
-  -RedirectStandardError 'C:\AI\repositories\DerpyClaw\local-ai-home-assistant-main\nova-observer\observer.err.log' `
+  -WorkingDirectory '[your-install-path]\Nova-Assistant-main\nova-observer' `
+  -RedirectStandardOutput '[your-install-path]\Nova-Assistant-main\nova-observer\observer.out.log' `
+  -RedirectStandardError '[your-install-path]\Nova-Assistant-main\nova-observer\observer.err.log' `
   -WindowStyle Hidden
 ```
 
@@ -100,19 +100,17 @@ The app can open without Ollama, but model-backed actions expect Ollama endpoint
 http://127.0.0.1:11434
 ```
 
-The default config references models such as:
+The default config uses `qwen3:14b` as the default worker model. Install or edit models in `nova-observer/observer.config.json` to match your local Ollama setup.
 
-- `gemma4:e4b`
-- `gemma4:26b`
-- `gemma3:1b`
+## Optional Environment Variables
 
-Install or edit these in `nova-observer/observer.config.json` to match your local Ollama setup.
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3220` | Observer UI port |
+| `QDRANT_URL` | `http://127.0.0.1:6333` | Qdrant vector store URL |
+| `QDRANT_COLLECTION` | `observer_chunks` | Qdrant collection name |
+| `OBSERVER_UI_LOCK_INACTIVITY_MS` | `1800000` (30 min) | Voice UI lock inactivity timeout |
+| `OBSERVER_SERVER_UNLOCK_TOKEN` | _(random)_ | Pre-shared token for server-side unlock without voice |
+| `OBSERVER_EXTERNAL_PLUGIN_IMPORT_MODE` | `allowlist` | Plugin import trust mode (`allowlist` or `permissive`) |
 
-## Notes From This Install
-
-- The UI responded with HTTP `200 OK` at `http://127.0.0.1:3220/`.
-- Qdrant started as container `nova-qdrant` and exposed `127.0.0.1:6333-6334`.
-- The observer logs showed warnings for missing optional plugins:
-  - `task-lifecycle-plugin.js`
-  - `session-memory-plugin.js`
-- The app continued running despite those plugin warnings.
+Missing optional plugins (`task-lifecycle-plugin.js`, `session-memory-plugin.js`, etc.) produce startup warnings but do not prevent the server from running.

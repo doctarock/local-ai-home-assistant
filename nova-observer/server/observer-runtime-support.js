@@ -226,11 +226,18 @@ export function createObserverRuntimeSupport(options = {}) {
     };
   }
 
+  let broadcastEventSeq = 0;
+
+  function setBroadcastSeqFloor(n) {
+    broadcastEventSeq = Math.max(broadcastEventSeq, Math.max(0, Number(n || 0)));
+  }
+
   function broadcastObserverEvent(event) {
+    broadcastEventSeq += 1;
     const payload = {
       ts: Date.now(),
       ...event,
-      eventSeq: Number(event?.eventSeq || event?.task?.latestEventSeq || 0)
+      eventSeq: broadcastEventSeq
     };
     const msg = `data: ${JSON.stringify(payload)}\n\n`;
     for (const res of observerEventClients) {
@@ -271,6 +278,7 @@ export function createObserverRuntimeSupport(options = {}) {
   return {
     broadcast,
     broadcastObserverEvent,
+    setBroadcastSeqFloor,
     defaultAppPropSlots,
     defaultAppReactionPathsByModel,
     defaultAppRoomTextures,

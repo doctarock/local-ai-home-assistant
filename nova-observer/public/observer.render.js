@@ -160,6 +160,8 @@ function formatTaskHistoryEventLabel(entry) {
   if (eventType === "task.failed") return "Failed";
   if (eventType === "task.closed") return "Closed";
   if (eventType === "task.removed") return "Removed";
+  if (eventType === "provider.history_saved") return "Provider history saved";
+  if (eventType === "tool.step_recorded") return "Tool step recorded";
   return eventType ? eventType.replace(/^task\./, "").replaceAll("_", " ") : "Updated";
 }
 
@@ -167,12 +169,32 @@ function formatTaskHistoryEventBody(entry) {
   const fromStatus = String(entry?.fromStatus || "").trim().replaceAll("_", " ");
   const toStatus = String(entry?.toStatus || "").trim().replaceAll("_", " ");
   const reason = String(entry?.reason || "").trim();
+  const summary = String(entry?.summary || "").trim();
+  const provider = String(entry?.provider || "").trim();
+  const toolName = String(entry?.toolName || "").trim();
+  const status = String(entry?.status || "").trim().replaceAll("_", " ");
+  const transactionId = String(entry?.transactionId || "").trim();
   const parts = [];
   if (fromStatus || toStatus) {
     parts.push(fromStatus && toStatus ? `${fromStatus} -> ${toStatus}` : (toStatus || fromStatus));
   }
   if (reason) {
     parts.push(reason);
+  }
+  if (summary) {
+    parts.push(summary);
+  }
+  if (provider) {
+    parts.push(`Provider: ${provider}`);
+  }
+  if (toolName) {
+    parts.push(`Tool: ${toolName}`);
+  }
+  if (status) {
+    parts.push(`Status: ${status}`);
+  }
+  if (transactionId) {
+    parts.push(`Transaction: ${transactionId}`);
   }
   return parts.join(" | ") || "No details recorded.";
 }
@@ -477,7 +499,14 @@ function setStatus(el, text, tone) {
 }
 
 function updateRunButtonState() {
-  runBtn.disabled = runInFlight;
+  const locked = typeof observerApp.isUiSecurityLocked === "function" && observerApp.isUiSecurityLocked();
+  runBtn.disabled = runInFlight || locked;
+  if (locked) {
+    runBtn.textContent = "Locked";
+    runBtn.title = "Unlock with a trusted voice command first";
+    return;
+  }
+  runBtn.title = "";
   if (runInFlight) {
     runBtn.textContent = "Running...";
     return;
@@ -534,6 +563,7 @@ function loadPanelFullscreenPreference() {
 
 function activateTab(tabId) {
   setPanelOpen(true);
+  const previousTabId = document.querySelector(".tab-panel.active")?.id || "";
   const allPanels = Array.from(document.querySelectorAll(".tab-panel"));
   const allTabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
   allPanels.forEach((panel) => {
@@ -542,6 +572,13 @@ function activateTab(tabId) {
   allTabButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.tabTarget === tabId);
   });
+  window.dispatchEvent(new CustomEvent("observer:tab-activated", {
+    detail: {
+      tabId,
+      previousTabId,
+      at: Date.now()
+    }
+  }));
 }
 
 function activateBrainSubtab(tabId) {

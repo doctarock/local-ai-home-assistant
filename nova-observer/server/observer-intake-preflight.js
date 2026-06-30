@@ -437,13 +437,51 @@ async function runIntakeWithOptionalRewrite({
     }
   }
 
-  const firstIntakePlan = await planIntakeWithBitNet({
-    message: originalMessage,
-    sessionId,
-    internetEnabled,
-    selectedMountIds,
-    forceToolUse
+  const buildRecoverableFallbackIntakePlan = (targetMessage = originalMessage, reason = "intake_model_unavailable") => ({
+    replyText: "I'll queue that for the worker.",
+    action: "enqueue",
+    tasks: [{ message: normalizeUserRequest(targetMessage) || originalMessage, every: "", delay: "" }],
+    reason: "Local intake model was unavailable; queued original request without model triage.",
+    modelUsed: "",
+    fallbackReason: reason
   });
+  const getRecoverableIntakeErrorReason = (error) => {
+    const message = String(error?.message || error || "").trim();
+    if (/^Ollama resource .+ is (already )?busy/i.test(message)) {
+      return "ollama_resource_busy";
+    }
+    if (/unable to load model/i.test(message)) {
+      return "ollama_model_load_failed";
+    }
+    return "";
+  };
+
+  let firstIntakePlan;
+  try {
+    firstIntakePlan = await planIntakeWithBitNet({
+      message: originalMessage,
+      sessionId,
+      internetEnabled,
+      selectedMountIds,
+      forceToolUse,
+      recentExchanges
+    });
+  } catch (error) {
+    const recoverableReason = getRecoverableIntakeErrorReason(error);
+    if (!recoverableReason) {
+      throw error;
+    }
+    return {
+      effectiveMessage: originalMessage,
+      originalMessage,
+      nativeResponse: null,
+      intakePlan: buildRecoverableFallbackIntakePlan(originalMessage, recoverableReason),
+      rewrite: {
+        used: false,
+        reason: recoverableReason
+      }
+    };
+  }
   if (firstIntakePlan.action === "reply_only") {
     return {
       effectiveMessage: originalMessage,
@@ -485,13 +523,23 @@ async function runIntakeWithOptionalRewrite({
     };
   }
 
-  const secondIntakePlan = await planIntakeWithBitNet({
-    message: rewrittenMessage,
-    sessionId,
-    internetEnabled,
-    selectedMountIds,
-    forceToolUse
-  });
+  let secondIntakePlan;
+  try {
+    secondIntakePlan = await planIntakeWithBitNet({
+      message: rewrittenMessage,
+      sessionId,
+      internetEnabled,
+      selectedMountIds,
+      forceToolUse,
+      recentExchanges
+    });
+  } catch (error) {
+    const recoverableReason = getRecoverableIntakeErrorReason(error);
+    if (!recoverableReason) {
+      throw error;
+    }
+    secondIntakePlan = buildRecoverableFallbackIntakePlan(rewrittenMessage, recoverableReason);
+  }
   return {
     effectiveMessage: rewrittenMessage,
     originalMessage,

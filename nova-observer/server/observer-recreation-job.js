@@ -10,6 +10,7 @@ export function createObserverRecreationJob(context = {}) {
     createQueuedTask,
     ensurePromptWorkspaceScaffolding,
     executeObserverRun,
+    formatDayKey,
     formatDateTimeForUser,
     getBrain,
     getAgentPersonaName,
@@ -34,6 +35,33 @@ export function createObserverRecreationJob(context = {}) {
       )
       .join("\n")
       .trim();
+  }
+
+  async function readRecentPersonalNoteContext(todayKey = "", limit = 4) {
+    if (!promptMemoryPersonalDailyRoot || !path || !context.fs) {
+      return [];
+    }
+    const entries = await context.fs.readdir(promptMemoryPersonalDailyRoot, { withFileTypes: true }).catch(() => []);
+    const files = entries
+      .filter((entry) => entry?.isFile?.() && /^\d{4}-\d{2}-\d{2}\.md$/.test(String(entry.name || "")))
+      .map((entry) => String(entry.name || "").replace(/\.md$/, ""))
+      .filter((dayKey) => dayKey <= todayKey)
+      .sort()
+      .reverse()
+      .slice(0, Math.max(1, Math.min(Number(limit || 4), 10)));
+    const notes = [];
+    for (const dayKey of files) {
+      const filePath = path.join(promptMemoryPersonalDailyRoot, `${dayKey}.md`);
+      const content = await readVolumeFile(filePath).catch(() => "");
+      const meaningful = extractMeaningfulPersonalNotes(content, dayKey);
+      if (meaningful) {
+        notes.push({
+          dayKey,
+          text: meaningful.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-6).join("\n")
+        });
+      }
+    }
+    return notes;
   }
 
   async function executeRecreationJob(task) {
@@ -77,7 +105,9 @@ export function createObserverRecreationJob(context = {}) {
     }
 
     const dateLabel = formatDateTimeForUser ? formatDateTimeForUser(now) : new Date(now).toLocaleString();
-    const todayKey = new Date(now).toISOString().slice(0, 10);
+    const todayKey = typeof formatDayKey === "function"
+      ? formatDayKey(now)
+      : new Date(now).toISOString().slice(0, 10);
     const workspaceRoot = String(observerContainerWorkspaceRoot || "/home/nova/.observer-sandbox/workspace").replace(/\/$/, "");
     const workspacePersonalMemoryPath = `${workspaceRoot}/memory/personal`;
     const hostPersonalNotesPath = promptMemoryPersonalDailyRoot && path
@@ -87,9 +117,19 @@ export function createObserverRecreationJob(context = {}) {
       ? await readVolumeFile(hostPersonalNotesPath).catch(() => "")
       : "";
     const meaningfulHostNotesBefore = extractMeaningfulPersonalNotes(hostPersonalNotesBefore, todayKey);
+    const recentPersonalNotes = await readRecentPersonalNoteContext(todayKey);
+    const recentPersonalNoteLines = recentPersonalNotes.length
+      ? [
+        "Recent personal-note context, for continuity and to avoid repeating yourself:",
+        ...recentPersonalNotes.map((entry) => `${entry.dayKey}: ${entry.text}`)
+      ]
+      : ["Recent personal-note context: no meaningful prior daily personal notes were found."];
 
     const message = [
       `It is ${dateLabel}. You have unstructured free time right now - no tasks assigned, no deliverables expected.`,
+      `Local daily note date key: ${todayKey}.`,
+      "",
+      ...recentPersonalNoteLines,
       "",
       `This is your time, ${agentName}. Use it however feels authentic to you. Some ideas:`,
       "- Browse the web for something that genuinely interests you (news, science, art, culture, tech, weird corners of the internet)",
@@ -100,6 +140,7 @@ export function createObserverRecreationJob(context = {}) {
       "- Look back at recent work and notice something that surprised you or stuck with you",
       "",
       "There's no right answer. Just don't spend the time doing nothing.",
+      "Do not reuse yesterday's wording or write a generic self-care paragraph. Anchor the note in one concrete thing from this run: something you fetched, noticed, wondered, made, or decided.",
       "",
       `Record whatever you do or think in the host-backed daily personal notes for ${todayKey}.`,
       `Required method: call update_daily_personal_notes with {"date":"${todayKey}","content":"...","mode":"append"}.`,

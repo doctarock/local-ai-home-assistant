@@ -148,6 +148,66 @@ test("remote Ollama CPU and GPU lanes sharing a base URL can run in parallel", a
   }
 });
 
+test("local Ollama CPU intake and GPU worker lanes sharing a base URL can run in parallel", async () => {
+  const previousFetch = globalThis.fetch;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    requests.push({ url: String(url), body: JSON.parse(options.body) });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    inFlight -= 1;
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { response: "{\"final\":true}" };
+      }
+    };
+  };
+
+  try {
+    const runtime = createRuntime({
+      findBrainByIdExact: async (brainId) => ({
+        id: brainId,
+        provider: "ollama",
+        kind: brainId === "intake" ? "intake" : "worker",
+        model: brainId === "intake" ? "cpu-model" : "gpu-model",
+        description: brainId === "intake" ? "CPU-only intake model" : "GPU worker",
+        ollamaBaseUrl: "http://127.0.0.1:11434"
+      }),
+      getBrainQueueLane: (brain) => String(brain?.description || "").toLowerCase().includes("cpu")
+        ? "endpoint:local:cpu"
+        : "endpoint:local:gpu",
+      isCpuQueueLane: (brain) => String(brain?.description || "").toLowerCase().includes("cpu")
+    });
+
+    const [cpuResult, gpuResult] = await Promise.all([
+      runtime.runOllamaGenerate("cpu-model", "CPU", {
+        brainId: "intake",
+        baseUrl: "http://127.0.0.1:11434",
+        leaseWaitMs: 250
+      }),
+      runtime.runOllamaGenerate("gpu-model", "GPU", {
+        brainId: "worker",
+        baseUrl: "http://127.0.0.1:11434",
+        leaseWaitMs: 250
+      })
+    ]);
+
+    assert.equal(cpuResult.ok, true);
+    assert.equal(gpuResult.ok, true);
+    assert.equal(requests.length, 2);
+    assert.equal(maxInFlight, 2);
+    const cpuRequest = requests.find((request) => request.body.model === "cpu-model");
+    assert.equal(cpuRequest.body.options.num_gpu, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("remote Ollama calls on the same GPU lane are serialized", async () => {
   const previousFetch = globalThis.fetch;
   let inFlight = 0;

@@ -626,10 +626,14 @@ function syncBuiltInBrainOverrides() {
   }
   const builtInBrains = Array.isArray(brainConfigDraft.builtInBrains) ? brainConfigDraft.builtInBrains : [];
   brainConfigDraft.brains.builtIn = builtInBrains
-    .map((brain) => ({
-      id: String(brain?.id || "").trim(),
-      model: String(brain?.model || "").trim()
-    }))
+    .map((brain) => {
+      const entry = { id: String(brain?.id || "").trim(), model: String(brain?.model || "").trim() };
+      const numGpu = brain?.numGpu != null && brain.numGpu !== "" ? parseInt(brain.numGpu, 10) : null;
+      if (numGpu != null && !isNaN(numGpu)) {
+        entry.numGpu = numGpu;
+      }
+      return entry;
+    })
     .filter((brain) => brain.id);
 }
 
@@ -730,6 +734,16 @@ function renderBrainConfigEditor() {
           <span class="micro">Endpoint</span>
           <select data-assignment-brain="${escapeAttr(brain.id)}">${endpointOptions}</select>
         </label>
+        <label class="stack-field">
+          <span class="micro">GPU layers</span>
+          <input
+            type="number"
+            data-built-in-brain="${escapeAttr(brain.id)}"
+            data-built-in-field="numGpu"
+            value="${brain.numGpu != null ? escapeAttr(String(brain.numGpu)) : ""}"
+            placeholder="auto"
+          />
+        </label>
       </div>
     </div>
   `).join("");
@@ -786,6 +800,10 @@ function renderBrainConfigEditor() {
           <label class="stack-field">
             <span class="micro">Queue lane</span>
             <input data-custom-field="queueLane" value="${escapeAttr(brain.queueLane || "")}" placeholder="optional" />
+          </label>
+          <label class="stack-field">
+            <span class="micro">GPU layers</span>
+            <input type="number" data-custom-field="numGpu" value="${brain.numGpu != null ? escapeAttr(String(brain.numGpu)) : ""}" placeholder="auto" />
           </label>
         </div>
         <label class="stack-field">
@@ -865,6 +883,12 @@ function renderBrainConfigEditor() {
       }
       if (field === "model") {
         brain.model = String(input.value || "").trim();
+        syncBuiltInBrainOverrides();
+        return;
+      }
+      if (field === "numGpu") {
+        const raw = String(input.value || "").trim();
+        brain.numGpu = raw !== "" && !isNaN(parseInt(raw, 10)) ? parseInt(raw, 10) : null;
         syncBuiltInBrainOverrides();
       }
     };
@@ -980,6 +1004,11 @@ function renderBrainConfigEditor() {
           if (brain.specialty !== input.value) {
             renderBrainConfigEditor();
           }
+          return;
+        }
+        if (field === "numGpu") {
+          const raw = String(input.value || "").trim();
+          brain.numGpu = raw !== "" && !isNaN(parseInt(raw, 10)) ? parseInt(raw, 10) : null;
           return;
         }
         brain[field] = input.value;

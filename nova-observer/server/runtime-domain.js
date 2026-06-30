@@ -124,15 +124,23 @@ export function registerRuntimeRoutes(context = {}) {
   app.get("/api/runtime/options", async (req, res) => {
     const observerConfig = context.getObserverConfig();
     const brains = await context.listAvailableBrains();
+    const activeProfile = typeof context.getActiveProfile === "function" ? context.getActiveProfile() : null;
+    const profileTitle = String(activeProfile?.ui?.title || "").trim();
     res.json({
       ok: true,
       app: {
         ...observerConfig.app,
+        botName: profileTitle || observerConfig.app?.botName,
+        identityName: String(observerConfig.app?.botName || "Agent").trim() || "Agent",
         trust: context.getAppTrustConfig()
       },
+      profile: activeProfile || null,
       language: context.getObserverLanguage(),
       lexicon: context.getObserverLexicon(),
-      defaults: observerConfig.defaults,
+      defaults: {
+        ...observerConfig.defaults,
+        intakeBrainId: String(activeProfile?.defaultBrain || "").trim() || observerConfig.defaults?.intakeBrainId
+      },
       queue: context.getQueueConfig(),
       projects: context.getProjectConfig(),
       routing: context.getRoutingConfig(),

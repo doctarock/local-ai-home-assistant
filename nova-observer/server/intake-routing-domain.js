@@ -1,3 +1,26 @@
+export function buildQueuedIntakeReceipt({
+  tasks = [],
+  fallbackText = "",
+  formatEntityRef = (_kind = "task", id = "") => String(id || "unknown"),
+  destinationLabel = "worker"
+} = {}) {
+  const queuedTasks = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
+  if (!queuedTasks.length) {
+    return String(fallbackText || "I'll take a closer look now.").trim();
+  }
+  const taskRefs = queuedTasks
+    .map((task) => String(task?.codename || formatEntityRef("task", task?.id || "unknown")).trim())
+    .filter(Boolean);
+  const destination = String(destinationLabel || "worker").trim() || "worker";
+  const base = String(fallbackText || "").trim();
+  const receipt = taskRefs.length === 1
+    ? `I've queued ${taskRefs[0]} for ${destination}. You can follow it in the task queue.`
+    : `I've queued ${taskRefs.length} tasks for ${destination}: ${taskRefs.join(", ")}. You can follow them in the task queue.`;
+  return base && !/^i'?ll take a closer look now\.?$/i.test(base)
+    ? `${base}\n\n${receipt}`
+    : receipt;
+}
+
 export function registerIntakeRoutingRoutes(context = {}) {
   const app = context.app;
   const runHook = typeof context.runHook === "function"
@@ -266,7 +289,25 @@ export function registerIntakeRoutingRoutes(context = {}) {
             return created;
           })()
         : [];
-      const agentReplyText = intake.replyText || (intake.action === "enqueue" ? "I'll take a closer look now." : "Done.");
+      const agentReplyText = intake.action === "enqueue"
+        ? buildQueuedIntakeReceipt({
+          tasks: enqueueResponse,
+          fallbackText: intake.replyText,
+          formatEntityRef: context.formatEntityRef,
+          destinationLabel: "worker"
+        })
+        : (intake.replyText || "Done.");
+      if (intake.action === "enqueue" && enqueueResponse.length && typeof context.broadcastObserverEvent === "function") {
+        context.broadcastObserverEvent({
+          type: "intake.request_queued",
+          taskRefs: enqueueResponse
+            .map((task) => task?.codename || context.formatEntityRef?.("task", task?.id || "unknown"))
+            .filter(Boolean),
+          destinationLabel: "worker",
+          message: effectiveMessage,
+          source: sourceIdentity?.kind || "intake"
+        });
+      }
       if (typeof context.appendSessionExchange === "function" && agentReplyText) {
         context.appendSessionExchange(sessionId, {
           userText: effectiveMessage,
@@ -303,7 +344,10 @@ export function registerIntakeRoutingRoutes(context = {}) {
             meta: {
               durationMs: 0,
               intake: true,
-              tasksQueued: enqueueResponse.length
+              tasksQueued: enqueueResponse.length,
+              queuedTaskRefs: enqueueResponse
+                .map((task) => task?.codename || context.formatEntityRef?.("task", task?.id || "unknown"))
+                .filter(Boolean)
             }
           }
         },

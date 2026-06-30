@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -151,6 +152,14 @@ import { createObserverRuntimeAccessors } from "./server/observer-runtime-access
 import { createObserverTaskLifecycleService } from "./server/observer-task-lifecycle-service.js";
 import { createPluginToolCatalogService } from "./server/plugin-tool-catalog-service.js";
 import {
+  buildPublicProfile,
+  getActiveProfile,
+  getActiveProfileSelection,
+  listAvailableProfiles,
+  loadActiveProfile,
+  saveProfileSelection
+} from "./server/lib/profile-manager.js";
+import {
   createPluginHookedQueueProcessors,
   createPluginObservedTriageTaskRequest,
   createPluginTaskLifecycleRuntimeService,
@@ -161,6 +170,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
+const RUNTIME_ROOT = path.join(__dirname, ".derpy-observer-runtime");
+const SERVER_UNLOCK_TOKEN_PATH = path.join(RUNTIME_ROOT, "server-unlock-token.json");
 
 const app = express();
 const {
@@ -191,19 +202,151 @@ app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "th
 app.use("/vendor/fonts", express.static(path.join(__dirname, "node_modules", "@fontsource")));
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/api/profile", async (_req, res) => {
+  res.json({
+    ok: true,
+    profile: buildPublicProfile(getActiveProfile()),
+    profiles: await listAvailableProfiles({ fs, rootDir: __dirname }),
+    selection: getActiveProfileSelection(),
+    restart: {
+      supported: canProcessAutoRestart(),
+      required: Boolean(getActiveProfileSelection().pendingProfileId)
+    }
+  });
+});
+
+app.get("/api/profile/options", async (_req, res) => {
+  try {
+    res.json({
+      ok: true,
+      profile: buildPublicProfile(getActiveProfile()),
+      profiles: await listAvailableProfiles({ fs, rootDir: __dirname }),
+      selection: getActiveProfileSelection(),
+      restart: {
+        supported: canProcessAutoRestart(),
+        required: Boolean(getActiveProfileSelection().pendingProfileId)
+      },
+      envOverride: Boolean(String(process.env.OBSERVER_PROFILE || "").trim())
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error || "failed to list profiles") });
+  }
+});
+
+app.post("/api/profile/select", async (req, res) => {
+  const adminValidation = validateUnlockedAdminRequest(req);
+  if (!adminValidation.ok) {
+    return res.status(adminValidation.status).json({ ok: false, error: adminValidation.error });
+  }
+  try {
+    const profileId = String(req.body?.profileId || "").trim();
+    const availableProfiles = await listAvailableProfiles({ fs, rootDir: __dirname });
+    if (!availableProfiles.some((profile) => profile.id === profileId)) {
+      return res.status(400).json({ ok: false, error: `profile ${profileId || "(empty)"} is not available` });
+    }
+    const saved = await saveProfileSelection({
+      fs,
+      preferencePath: PROFILE_SELECTION_PATH,
+      profileId
+    });
+    const restartRequested = req.body?.restart === true;
+    const restartSupported = canProcessAutoRestart();
+    const response = {
+      ok: true,
+      message: restartRequested && restartSupported
+        ? `Profile ${profileId} saved. Observer will restart so the profile can apply.`
+        : `Profile ${profileId} saved. Restart Observer to apply it.`,
+      saved,
+      profile: buildPublicProfile(getActiveProfile()),
+      profiles: availableProfiles,
+      selection: getActiveProfileSelection(),
+      restart: {
+        requested: restartRequested,
+        supported: restartSupported,
+        scheduled: restartRequested && restartSupported,
+        required: true
+      },
+      envOverride: Boolean(String(process.env.OBSERVER_PROFILE || "").trim())
+    };
+    if (restartRequested && restartSupported) {
+      let restartScheduled = false;
+      const scheduleRestart = () => {
+        if (restartScheduled) {
+          return;
+        }
+        restartScheduled = true;
+        setTimeout(() => {
+          try {
+            process.kill(process.pid, "SIGTERM");
+          } catch (error) {
+            console.error("[observer] failed to restart after profile switch:", error?.message || error);
+          }
+        }, 250);
+      };
+      res.once("finish", scheduleRestart);
+      res.once("close", scheduleRestart);
+    }
+    return res.json(response);
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: String(error?.message || error || "failed to save profile") });
+  }
+});
+
+async function loadOrCreateServerUnlockToken() {
+  const envToken = String(process.env.OBSERVER_SERVER_UNLOCK_TOKEN || "").trim();
+  if (envToken) {
+    return envToken;
+  }
+  await fs.mkdir(RUNTIME_ROOT, { recursive: true });
+  try {
+    const parsed = JSON.parse(await fs.readFile(SERVER_UNLOCK_TOKEN_PATH, "utf8"));
+    const existing = String(parsed?.token || "").trim();
+    if (existing) {
+      return existing;
+    }
+  } catch {
+    // Create a recovery token below.
+  }
+  const token = crypto.randomBytes(18).toString("hex");
+  await fs.writeFile(SERVER_UNLOCK_TOKEN_PATH, `${JSON.stringify({
+    token,
+    createdAt: Date.now(),
+    purpose: "Local Observer UI recovery unlock. Keep this file private to the host."
+  }, null, 2)}\n`, "utf8");
+  return token;
+}
+
 const PORT = Number(process.env.PORT || 3220);
+const SERVER_UNLOCK_TOKEN_VALUE = await loadOrCreateServerUnlockToken();
 const {
   adminUiToken: ADMIN_UI_TOKEN,
+  serverUnlockToken: SERVER_UNLOCK_TOKEN,
   registerAdminSecurityMiddleware,
+  validateUnlockedAdminRequest,
   validateAdminRequest
-} = createObserverAdminSecurity({ port: PORT });
+} = createObserverAdminSecurity({
+  port: PORT,
+  serverUnlockToken: SERVER_UNLOCK_TOKEN_VALUE,
+  getVoiceProfileCount: () => Array.isArray(voicePatternStore?.profiles)
+    ? voicePatternStore.profiles.filter((profile) => Array.isArray(profile?.signature) && profile.signature.length).length
+    : 0
+});
 registerAdminSecurityMiddleware(app);
-const RUNTIME_ROOT = path.join(__dirname, ".derpy-observer-runtime");
+console.log(`[observer] Server unlock token saved at ${SERVER_UNLOCK_TOKEN_PATH}`);
+const PROFILE_SELECTION_PATH = path.join(RUNTIME_ROOT, "active-profile.json");
 const PLUGIN_RUNTIME_ROOT = path.join(RUNTIME_ROOT, "plugins-runtime");
 const WORKSPACE_ROOT = path.resolve(__dirname, "..");
 const OBSERVER_INPUT_HOST_ROOT = path.resolve(__dirname, "..", "observer-input");
 const OBSERVER_OUTPUT_HOST_ROOT = path.resolve(__dirname, "..", "observer-output");
 const OBSERVER_ATTACHMENTS_ROOT = path.join(RUNTIME_ROOT, "observer-attachments");
+const ACTIVE_PROFILE = await loadActiveProfile({
+  fs,
+  rootDir: __dirname,
+  preferencePath: PROFILE_SELECTION_PATH,
+  env: process.env,
+  logger: console
+});
+console.log(`[observer] Active profile: ${ACTIVE_PROFILE.id}`);
 const OBSERVER_OUTPUT_ROOT = OBSERVER_OUTPUT_HOST_ROOT;
 const AGENT_WORKSPACES_ROOT = path.join(__dirname, ".agent-workspaces");
 const PROMPT_AGENT_ID = "nova";
@@ -375,6 +518,15 @@ let voicePatternStore = createInitialVoicePatternStore();
 let pluginManager = null;
 let pluginToolCatalogService = null;
 let memoryTrustDomain = null;
+
+function canProcessAutoRestart() {
+  return Boolean(
+    String(process.env.pm_id || "").trim()
+    || String(process.env.PM2_HOME || "").trim()
+    || String(process.env.__daemon || "").trim()
+    || String(process.env.FOREVER_ROOT || "").trim()
+  );
+}
 
 function requirePluginToolCatalogService() {
   if (!pluginToolCatalogService) {
@@ -600,6 +752,7 @@ const {
 const {
   broadcast,
   broadcastObserverEvent,
+  setBroadcastSeqFloor,
   defaultAppPropSlots,
   defaultAppReactionPathsByModel,
   defaultAppRoomTextures,
@@ -1212,6 +1365,7 @@ const {
   extractTaskIdFromQueuePath,
   findIndexedTaskById,
   listVolumeFiles: rawListVolumeFiles,
+  readCoreEventSeq,
   readTaskHistory,
   readTaskRecordAtPath,
   readTaskStateIndex,
@@ -1240,6 +1394,7 @@ const {
   taskStateIndexPath: TASK_STATE_INDEX_PATH,
   workspaceTaskPath: (...args) => workspaceTaskPath(...args)
 });
+setBroadcastSeqFloor(await readCoreEventSeq());
 
 async function listVolumeFiles(rootPath) {
   if (sandboxStateStore.isSandboxStatePath(rootPath)) {
@@ -1288,10 +1443,7 @@ async function writeVolumeText(filePath, content) {
 
 async function emitCoreEvent(event = {}) {
   const recorded = await recordCoreEvent(event);
-  broadcastObserverEvent({
-    ...event,
-    eventSeq: Number(recorded?.eventSeq || 0)
-  });
+  broadcastObserverEvent({ ...event, logEventSeq: Number(recorded?.eventSeq || 0) });
   return recorded;
 }
 
@@ -1359,6 +1511,7 @@ const {
 } = createToolConfigService({
   buildToolCatalog,
   compactTaskText,
+  getActiveProfile,
   normalizeToolName,
   sanitizeSkillSlug,
   readVolumeFile,
@@ -1762,6 +1915,7 @@ const INTAKE_TOOLS = OBSERVER_INTAKE_TOOLS;
 
 pluginToolCatalogService = createPluginToolCatalogService({
   buildObserverToolCatalog,
+  getActiveProfile,
   getPluginManager: () => pluginManager,
   getWorkerTools: () => WORKER_TOOLS,
   intakeTools: INTAKE_TOOLS
@@ -2063,7 +2217,9 @@ const {
   createQueuedTask,
   ensurePromptWorkspaceScaffolding,
   executeObserverRun: (...args) => executeObserverRun(...args),
+  formatDayKey,
   formatDateTimeForUser,
+  fs,
   getBrain,
   getAgentPersonaName,
   getObserverConfig: () => observerConfig,
@@ -2584,6 +2740,8 @@ const {
 
 const {
   buildIntakeSystemPrompt,
+  buildFocusedWorkerUserRequest,
+  buildWorkerToolAccess,
   buildPromptReviewSampleMessage,
   buildWorkerSpecialtyPromptLines,
   buildWorkerSystemPrompt,
@@ -2601,6 +2759,7 @@ const {
   buildAgentSkillsGuidanceNote: () => agentSkillsService.buildAgentSkillsGuidanceNote(),
   buildPromptMemoryGuidanceNote,
   fs,
+  getActiveProfile,
   getPluginToolsByScope: collectPluginToolsSync,
   selectToolsForTask,
   runPluginHook: async (hookName, payload) => {
@@ -2645,6 +2804,8 @@ const { executeObserverRun: executeObserverRun } = createObserverExecutionRunner
   },
   buildTranscriptForPrompt,
   buildVisionImagesFromAttachments,
+  buildFocusedWorkerUserRequest,
+  buildWorkerToolAccess,
   buildWorkerSystemPrompt,
   collectTrackedWorkspaceTargets,
   compactTaskText,
@@ -2689,6 +2850,10 @@ const { executeObserverRun: executeObserverRun } = createObserverExecutionRunner
   appendSuccessLesson,
   appendProviderHistory: (...args) => taskFlightRecorder.appendProviderHistory(...args),
   appendToolStep: (...args) => taskFlightRecorder.appendToolStep(...args),
+  buildTaskHarnessEval: async (taskId = "") => {
+    const packet = await taskFlightRecorder.buildDebugPacket(taskId, { limit: 80 });
+    return packet?.harnessEval || null;
+  },
   writeProviderSummary: (...args) => taskFlightRecorder.writeProviderSummary(...args),
   OBSERVER_CONTAINER_WORKSPACE_ROOT,
   loopLessonsHostPath: path.join(PROMPT_FILES_ROOT, "LOOP-LESSONS.md"),
@@ -2873,6 +3038,7 @@ const pluginRuntimeContext = {
   PROJECT_MARKER_FILE_NAME: ".observer-project.json",
   TASK_QUEUE_CLOSED,
   addProjectRole: (...args) => getProjectsRuntime()?.addProjectRole?.(...args),
+  activeProfile: ACTIVE_PROFILE,
   appendDailyAssistantMemory,
   buildFailureReshapeMessage,
   buildProjectConfigPayload: (...args) => getProjectsRuntime()?.buildProjectConfigPayload?.(...args),
@@ -2896,6 +3062,7 @@ const pluginRuntimeContext = {
   fs,
   formatDateTimeForUser,
   getActiveMailAgent,
+  getActiveProfile,
   getBrain,
   getBrainQueueLane,
   getMailState: () => mailState,
@@ -2945,6 +3112,7 @@ const pluginRuntimeContext = {
   readJsonFileIfExists,
   readTextFileIfExists,
   readVolumeFile,
+  runOllamaGenerate,
   removeProjectChecklistItem: (...args) => getProjectsRuntime()?.removeProjectChecklistItem?.(...args),
   removeProjectRole: (...args) => getProjectsRuntime()?.removeProjectRole?.(...args),
   saveObserverConfig,
@@ -2970,6 +3138,7 @@ const pluginRuntimeContext = {
   taskFlightRecorder: {
     appendHookTrace: (...args) => taskFlightRecorder.appendHookTrace(...args),
     buildDebugPacket: (...args) => taskFlightRecorder.buildDebugPacket(...args),
+    buildHarnessEvalReport: (...args) => taskFlightRecorder.buildHarnessEvalReport(...args),
     validateProviderHistory: (...args) => taskFlightRecorder.validateProviderHistory(...args)
   },
   wordpressSiteRegistryPath: WORDPRESS_SITE_REGISTRY_PATH,
@@ -2987,6 +3156,7 @@ const {
   fs,
   getObserverConfig: () => observerConfig,
   pathModule: path,
+  profile: ACTIVE_PROFILE,
   pluginRuntimeRoot: PLUGIN_RUNTIME_ROOT,
   rootDir: __dirname,
   runtimeContext: pluginRuntimeContext,
@@ -3086,6 +3256,7 @@ await composeObserverServer({
     broadcast,
     clients,
     getAppTrustConfig,
+    getActiveProfile,
     getBrainQueueLane,
     getConfiguredBrainEndpoints,
     getQdrantStatus: () => retrievalDomain.getStatus(),
@@ -3118,7 +3289,9 @@ await composeObserverServer({
     appendSessionExchange,
     annotateNovaSpeechText,
     broadcast,
+    broadcastObserverEvent,
     createQueuedTask,
+    formatEntityRef,
     getBrain,
     getHelperAnalysisForRequest,
     getObserverConfig: () => observerConfig,

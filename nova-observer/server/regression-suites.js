@@ -668,6 +668,14 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
       description: "Verify retry, escalation, classification, and inspection guardrails for project-cycle execution.",
       cases: [
         {
+          id: "classify-completion-without-inspection",
+          label: "Classify completion without inspection",
+          kind: "internal",
+          mode: "failure_classification",
+          failureText: "worker claimed completion without inspecting concrete files or resources",
+          expectedClassification: "no_inspection"
+        },
+        {
           id: "classify-no-change-targets",
           label: "Classify no-change target failure",
           kind: "internal",
@@ -692,12 +700,36 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           expectedClassification: "low_value_tool_loop"
         },
         {
+          id: "classify-hidden-tool-not-available",
+          label: "Classify hidden focused-tool violation",
+          kind: "internal",
+          mode: "failure_classification",
+          failureText: "tool \"shell_command\" is not available in the current focused tool set. Available tools: read_document, list_files",
+          expectedClassification: "hidden_tool_not_available"
+        },
+        {
           id: "classify-project-missing-concrete-change",
           label: "Classify project missing concrete change failure",
           kind: "internal",
           mode: "failure_classification",
           failureText: "worker attempted project-cycle finalization before satisfying completion policy: no concrete project file change was recorded",
           expectedClassification: "project_missing_concrete_change"
+        },
+        {
+          id: "classify-project-final-missing-changed-target",
+          label: "Classify project final text missing changed target failure",
+          kind: "internal",
+          mode: "failure_classification",
+          failureText: "worker attempted project-cycle finalization without naming the changed project target",
+          expectedClassification: "project_final_missing_changed_target"
+        },
+        {
+          id: "classify-project-completion-policy-blocked",
+          label: "Classify unresolved project completion policy blocker",
+          kind: "internal",
+          mode: "failure_classification",
+          failureText: "worker attempted project-cycle finalization with unresolved completion policy blockers: future_policy_code",
+          expectedClassification: "project_completion_policy_blocked"
         },
         {
           id: "classify-project-missing-todo-update",
@@ -786,6 +818,25 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
             progressKind: "capability_request",
             concreteProgress: true,
             inspectionOnly: false
+          }
+        },
+        {
+          id: "tool-loop-step-summarize-is-read-only",
+          label: "Tool loop step treats summarize pseudo-tool as read-only",
+          kind: "internal",
+          mode: "tool_loop_step_diagnostics",
+          toolResults: [
+            { name: "summarize", ok: true, result: { summary: "Short summary." } }
+          ],
+          inspectionTargets: [],
+          newInspectionTargets: [],
+          newConcreteInspectionTargets: [],
+          changedWorkspaceFiles: [],
+          changedOutputFiles: [],
+          expected: {
+            progressKind: "inspection_repeat",
+            concreteProgress: false,
+            inspectionOnly: true
           }
         },
         {
@@ -1017,6 +1068,19 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           }
         },
         {
+          id: "tool-call-args-keep-file-path-alias",
+          label: "Tool call args keep file_path alias for document reads",
+          kind: "internal",
+          mode: "tool_call_args",
+          toolCall: {
+            name: "read_document",
+            arguments: "{\"file_path\":\"/home/nova/.observer-sandbox/workspace/simple-check-project/README.md\"}"
+          },
+          expected: {
+            file_path: "/home/nova/.observer-sandbox/workspace/simple-check-project/README.md"
+          }
+        },
+        {
           id: "tool-call-args-keep-target-alias-for-edit-file",
           label: "Tool call args keep target alias for file edits",
           kind: "internal",
@@ -1117,6 +1181,42 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           expectedIncludes: [
             "Retry note: the previous worker made progress but did not update PROJECT-TODO.md before finishing.",
             "Update /home/nova/.observer-sandbox/workspace/simple-check-project/PROJECT-TODO.md to check off the completed objective or rewrite it to reflect the remaining work."
+          ]
+        },
+        {
+          id: "project-final-missing-target-retry-message",
+          label: "Project final missing changed target retry message",
+          kind: "internal",
+          mode: "project_retry_message",
+          task: {
+            message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Complete the unchecked directive item in directive.md: Check this box.\nProject root: /home/nova/.observer-sandbox/workspace/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/simple-check-project/directive.md",
+            projectPath: "/home/nova/.observer-sandbox/workspace/simple-check-project",
+            projectWorkPrimaryTarget: "directive.md"
+          },
+          failureClassification: "project_final_missing_changed_target",
+          expectedIncludes: [
+            "Retry note: the previous worker changed project files but finished without naming the changed project target.",
+            "final_text that names at least one changed project file or directory"
+          ]
+        },
+        {
+          id: "project-completion-policy-blocked-retry-message",
+          label: "Project completion policy blocked retry message",
+          kind: "internal",
+          mode: "project_retry_message",
+          task: {
+            message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Complete the unchecked directive item in directive.md: Check this box.\nProject root: /home/nova/.observer-sandbox/workspace/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/simple-check-project/directive.md",
+            harnessEvalSnapshot: {
+              completion: {
+                rejectionReasons: ["future_policy_code"]
+              }
+            }
+          },
+          failureClassification: "project_completion_policy_blocked",
+          expectedIncludes: [
+            "Retry note: the previous worker hit unresolved project-cycle completion policy blockers.",
+            "Completion blocker evidence: future_policy_code",
+            "Resolve the named blocker before finishing"
           ]
         },
         {
@@ -1894,6 +1994,21 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           expectedBrainId: "worker"
         },
         {
+          id: "project-retry-recovers-hidden-focused-tool-failure",
+          label: "Project retry recovers hidden focused-tool failures",
+          kind: "internal",
+          mode: "project_retry_brain_preference",
+          task: {
+            sessionId: "project-cycle",
+            internalJobType: "project_cycle",
+            requestedBrainId: "lappy_gpu_big"
+          },
+          failureClassification: "hidden_tool_not_available",
+          specialty: "code",
+          attemptedBrains: ["lappy_coder", "code_worker", "lappy_gpu_big"],
+          expectedBrainId: "worker"
+        },
+        {
           id: "planning-objective-loop-does-not-imply-capability-mismatch",
           label: "Planning objective with real inspection is not auto-marked as capability mismatch",
           kind: "internal",
@@ -1913,6 +2028,40 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
             }
           },
           expectedCapabilityMismatch: false
+        },
+        {
+          id: "project-retry-message-includes-harness-snapshot-guidance",
+          label: "Project retry message includes harness snapshot guidance",
+          kind: "internal",
+          mode: "project_retry_message",
+          failureClassification: "low_value_tool_loop",
+          task: {
+            sessionId: "project-cycle",
+            internalJobType: "project_cycle",
+            message: "Advance the project Starforge-novel-project.\nObjective: Make one concrete improvement.",
+            harnessEvalSnapshot: {
+              health: {
+                status: "needs_attention",
+                reasons: ["hidden_tool_violation", "inspection_heavy", "tool_selection_uncertain"]
+              },
+              signals: ["inspection_heavy", "hidden_tool_violation"],
+              tools: {
+                toolSelectionConfident: false,
+                toolSelectionReason: "too_many_tool_families_matched",
+                matchedToolFamilies: ["files", "project", "skills"],
+                hiddenToolViolationCount: 1,
+                readOnlyOkCount: 4,
+                actionOkCount: 0
+              }
+            }
+          },
+          expectedIncludes: [
+            "Harness note: the previous run was inspection-heavy.",
+            "Harness note: the previous run tried a hidden tool.",
+            "Harness note: previous read/action balance was 4/0.",
+            "Harness note: tool selection was uncertain (too_many_tool_families_matched) after matching files, project, skills.",
+            "Harness health: needs_attention (hidden_tool_violation, inspection_heavy, tool_selection_uncertain)."
+          ]
         },
         {
           id: "project-repeated-tool-retry-recovers-without-fallback-list",
@@ -1981,12 +2130,14 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           lowValueStreak: 2,
           requireConcreteConvergence: true,
           mentionsSkillsOrToolbelt: true,
+          availableToolNames: ["read_document", "edit_file", "shell_command"],
           stepDiagnostics: {
             progressKind: "exploration"
           },
           mustInclude: [
-            "multiple tool steps without concrete convergence",
-            "request_skill_installation/request_tool_addition",
+            "Checkpoint: you are leaving inspection mode",
+            "Visible action/validation tools for the next move: edit_file, shell_command.",
+            "Do not call another read-only tool unless you name the specific missing fact",
             "search the skill library"
           ]
         },
@@ -2079,6 +2230,43 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           ],
           mustNotInclude: [
             "Escalation planner reviewed the failed worker chain."
+          ]
+        },
+        {
+          id: "escalation-close-summary-includes-harness-signals",
+          label: "Escalation close summary includes harness signals",
+          kind: "internal",
+          mode: "escalation_close_summary",
+          task: {
+            message: "Advance the project GlumGame-project in /home/nova/.observer-sandbox/workspace/GlumGame-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Tighten validation and user feedback in `observer-input/app.js`.\nInspect first: /home/nova/.observer-sandbox/workspace/GlumGame-project/observer-input/app.js",
+            projectPath: "/home/nova/.observer-sandbox/workspace/GlumGame-project",
+            projectWorkPrimaryTarget: "observer-input/app.js",
+            failureClassification: "hidden_tool_not_available",
+            harnessEvalSnapshot: {
+              health: {
+                status: "needs_attention",
+                reasons: ["hidden_tool_violation", "inspection_heavy", "tool_selection_uncertain"]
+              },
+              signals: ["inspection_heavy", "hidden_tool_violation"],
+              tools: {
+                toolSelectionConfident: false,
+                toolSelectionReason: "too_many_tool_families_matched",
+                matchedToolFamilies: ["files", "project", "skills"],
+                hiddenToolViolationCount: 1,
+                readOnlyOkCount: 5,
+                actionOkCount: 0
+              }
+            }
+          },
+          reason: "Escalation review closed this out because no untried worker remained.",
+          mustInclude: [
+            "Recommended next step:",
+            "only the currently exposed tools",
+            "Harness signal: the failed pass was inspection-heavy",
+            "Harness signal: the failed pass attempted a hidden tool",
+            "Harness signal: previous read/action balance was 5/0",
+            "Harness signal: tool selection was uncertain (too_many_tool_families_matched) after matching files, project, skills.",
+            "Harness health: needs_attention (hidden_tool_violation, inspection_heavy, tool_selection_uncertain)."
           ]
         },
         {
@@ -2186,10 +2374,17 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
           },
           lowValueStreak: 2,
           requireConcreteConvergence: true,
+          availableToolNames: ["read_document", "edit_file"],
           mustInclude: [
             "The last step added exploration only. Use that information to move into an edit, validation, capability request, or a no-change conclusion instead of broadening inspection again.",
-            "You have spent multiple tool steps without concrete convergence.",
-            "If a repo change is now clear, use edit_file for targeted text changes, write_file for new or fully rewritten files, or move_path for renames instead of another read-only inspection step."
+            "Checkpoint: you are leaving inspection mode.",
+            "If a repo change is now clear, use an available edit, write, move, or validation tool instead of another read-only inspection step.",
+            "Visible action/validation tools for the next move: edit_file."
+          ],
+          mustNotInclude: [
+            "use edit_file for targeted text changes",
+            "write_file for new or fully rewritten files",
+            "move_path for renames"
           ]
         },
         {
@@ -2212,6 +2407,31 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
             "The last read showed unexpectedly empty content in: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/directive.md.",
             "If the expected content can be reconstructed safely from the task brief, nearby files, or project tracking docs, repair that file now instead of rereading it.",
             "finish with final_text starting exactly with 'QUESTION FOR USER:'"
+          ]
+        },
+        {
+          id: "post-tool-handoff-failed-args-pushes-repair",
+          label: "Post-tool handoff turns failed tool args into repair guidance",
+          kind: "internal",
+          mode: "post_tool_handoff",
+          toolResults: [
+            {
+              tool_call_id: "call_1",
+              name: "write_file",
+              ok: false,
+              error: "path is required"
+            },
+            {
+              tool_call_id: "call_2",
+              name: "edit_file",
+              ok: false,
+              error: "edit_file content must be non-empty"
+            }
+          ],
+          mustInclude: [
+            "Failed tool feedback: write_file: path is required | edit_file: edit_file content must be non-empty.",
+            "Repair the failed call by retrying the same intended tool with the explicit full path in the path field",
+            "Repair the failed write/edit call by providing non-empty content or a valid oldText/newText replacement"
           ]
         },
         {
@@ -2401,6 +2621,117 @@ export function buildRegressionSuiteDefinitions({ outputRoot = "" } = {}) {
             "missing_concrete_project_change",
             "missing_project_todo_update",
             "missing_machine_verifiable_outcome"
+          ]
+        },
+        {
+          id: "project-cycle-completion-policy-rejects-final-text-without-changed-target",
+          label: "Project-cycle completion policy rejects concrete changes whose final text omits the changed target",
+          kind: "internal",
+          mode: "project_cycle_completion_policy",
+          message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Complete the unchecked directive item in directive.md: Check this box.\nProject root: /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/directive.md\nRequired planning files: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-ROLE-TASKS.md.\nExpected first move: Read /home/nova/.observer-sandbox/workspace/projects/simple-check-project/directive.md before deciding on further edits.",
+          finalText: "I completed the requested project update and updated the tracking file.",
+          inspectedTargets: [
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/directive.md"
+          ],
+          successfulToolNames: [
+            "read_document",
+            "edit_file",
+            "edit_file"
+          ],
+          changedWorkspaceFiles: [
+            { containerPath: "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/directive.md" },
+            { containerPath: "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md" }
+          ],
+          expectedEligibleForCompletion: false,
+          expectedBlockingCodes: [
+            "final_missing_changed_project_target"
+          ]
+        },
+        {
+          id: "project-cycle-completion-policy-allows-validation-only-finish",
+          label: "Project-cycle completion policy allows validation-only finish for verification objectives",
+          kind: "internal",
+          mode: "project_cycle_completion_policy",
+          message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Verify the package test suite passes with npm test.\nProject root: /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json\nRequired planning files: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-ROLE-TASKS.md.\nExpected first move: Read /home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json before deciding on further edits.",
+          finalText: "I ran npm test and verified the package test suite passed.",
+          inspectedTargets: [
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json"
+          ],
+          successfulToolNames: [
+            "read_document",
+            "shell_command"
+          ],
+          expectedEligibleForCompletion: true,
+          unexpectedBlockingCodes: [
+            "missing_machine_verifiable_outcome",
+            "missing_concrete_project_change",
+            "missing_project_todo_update"
+          ]
+        },
+        {
+          id: "project-cycle-completion-policy-rejects-vague-validation-finish",
+          label: "Project-cycle completion policy rejects vague validation-only finish without outcome",
+          kind: "internal",
+          mode: "project_cycle_completion_policy",
+          message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Verify the package test suite passes with npm test.\nProject root: /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json\nRequired planning files: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-ROLE-TASKS.md.\nExpected first move: Read /home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json before deciding on further edits.",
+          finalText: "I checked the package test suite.",
+          inspectedTargets: [
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json"
+          ],
+          successfulToolNames: [
+            "read_document",
+            "shell_command"
+          ],
+          expectedEligibleForCompletion: false,
+          expectedBlockingCodes: [
+            "missing_machine_verifiable_outcome"
+          ]
+        },
+        {
+          id: "project-cycle-completion-policy-rejects-partial-no-change-target-list",
+          label: "Project-cycle completion policy rejects no-change finish that names only one inspected target",
+          kind: "internal",
+          mode: "project_cycle_completion_policy",
+          message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Review the current implementation and report whether any safe change is needed.\nProject root: /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js\nRequired planning files: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-ROLE-TASKS.md.\nExpected first move: Read /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js before deciding on further edits.",
+          minimumConcreteTargets: 3,
+          finalText: "No change is possible after inspecting /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js.",
+          inspectedTargets: [
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js",
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/router.js",
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json"
+          ],
+          successfulToolNames: [
+            "read_document",
+            "read_document",
+            "read_document"
+          ],
+          expectedEligibleForCompletion: false,
+          expectedBlockingCodes: [
+            "no_change_missing_named_targets"
+          ]
+        },
+        {
+          id: "project-cycle-completion-policy-allows-natural-no-change-wording",
+          label: "Project-cycle completion policy allows natural no-change wording after enough inspection",
+          kind: "internal",
+          mode: "project_cycle_completion_policy",
+          message: "Advance the project simple-check-project in /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nThis is a focused project work package, not a full project sweep.\nObjective: Review the current implementation and report whether any safe change is needed.\nProject root: /home/nova/.observer-sandbox/workspace/projects/simple-check-project.\nInspect first: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js\nRequired planning files: /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-TODO.md and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/PROJECT-ROLE-TASKS.md.\nExpected first move: Read /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js before deciding on further edits.",
+          minimumConcreteTargets: 3,
+          finalText: "No safe change is needed after inspecting /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js, /home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/router.js, and /home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json.",
+          inspectedTargets: [
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/app.js",
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/src/router.js",
+            "/home/nova/.observer-sandbox/workspace/projects/simple-check-project/package.json"
+          ],
+          successfulToolNames: [
+            "read_document",
+            "read_document",
+            "read_document"
+          ],
+          expectedEligibleForCompletion: true,
+          unexpectedBlockingCodes: [
+            "missing_machine_verifiable_outcome",
+            "no_change_missing_named_targets"
           ]
         },
         {

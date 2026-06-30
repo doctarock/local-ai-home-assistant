@@ -178,6 +178,12 @@ export function createObserverBrainConfigDomain(options = {}) {
     return { ...endpoint, id: endpoint.id || endpointId };
   }
 
+  function normalizeNumGpu(value) {
+    if (value == null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) && Number.isInteger(n) ? n : null;
+  }
+
   function decorateBrain(brain = {}) {
     const endpoint = brain?.endpointId || brain?.ollamaBaseUrl || brain?.baseUrl
       ? {
@@ -191,6 +197,7 @@ export function createObserverBrainConfigDomain(options = {}) {
       : getBrainEndpointForId(brain?.id || "");
     const provider = normalizeProviderId(endpoint.provider || "ollama");
     const baseUrl = normalizeProviderBaseUrl(endpoint.baseUrl || "", provider);
+    const numGpu = normalizeNumGpu(brain?.numGpu);
     return {
       ...brain,
       provider,
@@ -201,7 +208,8 @@ export function createObserverBrainConfigDomain(options = {}) {
       apiKeyEnv: String(endpoint.apiKeyEnv || brain?.apiKeyEnv || "").trim(),
       apiKeyHandle: String(endpoint.apiKeyHandle || brain?.apiKeyHandle || "").trim(),
       remote: provider !== "ollama" || baseUrl !== localOllamaBaseUrl,
-      queueLane: String(brain?.queueLane || "").trim()
+      queueLane: String(brain?.queueLane || "").trim(),
+      numGpu
     };
   }
 
@@ -218,9 +226,11 @@ export function createObserverBrainConfigDomain(options = {}) {
     if (!model) {
       return null;
     }
+    const numGpu = normalizeNumGpu(entry.numGpu);
     return {
       id,
-      model
+      model,
+      ...(numGpu != null ? { numGpu } : {})
     };
   }
 
@@ -245,7 +255,8 @@ export function createObserverBrainConfigDomain(options = {}) {
     }
     return {
       ...brain,
-      model: override.model || brain.model
+      model: override.model || brain.model,
+      ...(override.numGpu != null ? { numGpu: override.numGpu } : {})
     };
   }
 
@@ -287,6 +298,7 @@ export function createObserverBrainConfigDomain(options = {}) {
       cronCapable: entry.cronCapable === true,
       description: String(entry.description || "Network Ollama brain"),
       queueLane: String(entry.queueLane || "").trim(),
+      numGpu: normalizeNumGpu(entry.numGpu),
       provider: endpoint.provider,
       endpointId: endpoint.id,
       endpointLabel: endpoint.label,
@@ -309,6 +321,7 @@ export function createObserverBrainConfigDomain(options = {}) {
     const endpointId = knownEndpointIds.has(String(entry?.endpointId || "").trim())
       ? String(entry.endpointId).trim()
       : "local";
+    const serializedNumGpu = normalizeNumGpu(entry?.numGpu);
     return {
       id,
       label: String(entry?.label || toBrainLabel(id)).trim() || toBrainLabel(id),
@@ -319,7 +332,8 @@ export function createObserverBrainConfigDomain(options = {}) {
       specialty: String(entry?.specialty || "").trim().toLowerCase(),
       toolCapable: entry?.toolCapable === true,
       cronCapable: entry?.cronCapable === true,
-      description: String(entry?.description || "").trim()
+      description: String(entry?.description || "").trim(),
+      ...(serializedNumGpu != null ? { numGpu: serializedNumGpu } : {})
     };
   }
 
@@ -340,12 +354,14 @@ export function createObserverBrainConfigDomain(options = {}) {
       queue: getQueueConfig(),
       builtInBrains: agentBrains.map((brain) => {
         const effectiveBrain = applyBuiltInBrainOverrides(brain);
+        const numGpu = normalizeNumGpu(effectiveBrain.numGpu);
         return {
           id: brain.id,
           label: effectiveBrain.label,
           kind: effectiveBrain.kind,
           model: effectiveBrain.model,
-          description: effectiveBrain.description
+          description: effectiveBrain.description,
+          ...(numGpu != null ? { numGpu } : {})
         };
       })
     };
@@ -360,7 +376,7 @@ export function createObserverBrainConfigDomain(options = {}) {
   }
 
   function getBrainQueueLane(brain = {}) {
-    if (!brain || brain.kind === "intake") {
+    if (!brain) {
       return "";
     }
     if (String(brain.queueLane || "").trim()) {
@@ -682,6 +698,11 @@ export function createObserverBrainConfigDomain(options = {}) {
       const lastActivityTs = brainTasks.reduce((best, task) =>
         Math.max(best, Number(task.completedAt || task.updatedAt || task.startedAt || task.createdAt || 0)), 0);
       const endpointHealthy = brain.ollamaBaseUrl ? (await getProviderEndpointHealth(brain))?.running === true : true;
+      const timedTasks = done
+        .filter((task) => String(task.requestedBrainId || "") === String(brain.id || "") && Number(task.startedAt || 0) > 0 && Number(task.completedAt || 0) > 0)
+        .map((task) => Number(task.completedAt) - Number(task.startedAt))
+        .filter((ms) => ms > 0);
+      const avgRequestMs = timedTasks.length ? Math.round(timedTasks.reduce((sum, ms) => sum + ms, 0) / timedTasks.length) : 0;
       return {
         id: brain.id,
         label: brain.label,
@@ -700,6 +721,8 @@ export function createObserverBrainConfigDomain(options = {}) {
         failedCount: failed.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
         lastActivityAt: lastActivityTs || 0,
         idleForMs: lastActivityTs ? Math.max(0, now - lastActivityTs) : 0,
+        avgRequestMs,
+        avgRequestSampleCount: timedTasks.length,
         endpointHealthy
       };
     }));
@@ -992,7 +1015,7 @@ export function createObserverBrainConfigDomain(options = {}) {
       const intakeBrain = await chooseIntakePlanningBrain() || await getBrain("bitnet");
       const workerBrain = await getBrain("worker");
       for (const warmup of [
-        { brain: intakeBrain, prompt: "READY", options: { num_gpu: 0, temperature: 0, top_k: 1, num_predict: 1 } },
+        { brain: intakeBrain, prompt: "READY", options: { ...(intakeBrain.numGpu != null ? { num_gpu: intakeBrain.numGpu } : {}), temperature: 0, top_k: 1, num_predict: 1 } },
         { brain: workerBrain, prompt: "READY", options: { temperature: 0, top_k: 1, num_predict: 1 } }
       ]) {
         const result = await runOllamaGenerate(warmup.brain.model, warmup.prompt, {

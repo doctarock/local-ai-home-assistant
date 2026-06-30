@@ -44,6 +44,38 @@ export function createObserverEscalationReview(context = {}) {
     return null;
   }
 
+  function buildHarnessEvalPromptLine(task = {}, sourceTask = {}) {
+    const snapshot = task?.harnessEvalSnapshot && typeof task.harnessEvalSnapshot === "object"
+      ? task.harnessEvalSnapshot
+      : sourceTask?.harnessEvalSnapshot && typeof sourceTask.harnessEvalSnapshot === "object"
+        ? sourceTask.harnessEvalSnapshot
+        : null;
+    if (!snapshot) {
+      return "Harness eval: none";
+    }
+    const signals = Array.isArray(snapshot.signals)
+      ? snapshot.signals.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const tools = snapshot.tools && typeof snapshot.tools === "object" ? snapshot.tools : {};
+    const prompt = snapshot.prompt && typeof snapshot.prompt === "object" ? snapshot.prompt : {};
+    const health = snapshot.health && typeof snapshot.health === "object" ? snapshot.health : {};
+    const healthReasons = Array.isArray(health.reasons)
+      ? health.reasons.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const matchedFamilies = Array.isArray(tools.matchedToolFamilies)
+      ? tools.matchedToolFamilies.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    return [
+      `Harness health=${String(health.status || "unknown").trim() || "unknown"}${healthReasons.length ? ` (${healthReasons.join(", ")})` : ""}`,
+      `Harness eval: signals=${signals.join(", ") || "none"}`,
+      `contextReduced=${prompt.latestContextReduced === true ? "yes" : "no"}`,
+      `visibleTools=${Number(tools.latestVisibleToolCount || 0)}`,
+      `selector=${tools.toolSelectionConfident === false ? "uncertain" : tools.toolSelectionConfident === true ? "confident" : "unknown"}${tools.toolSelectionReason ? `/${String(tools.toolSelectionReason).trim()}` : ""}${matchedFamilies.length ? ` [${matchedFamilies.join(", ")}]` : ""}`,
+      `hiddenToolHits=${Number(tools.hiddenToolViolationCount || 0)}`,
+      `read/action=${Number(tools.readOnlyOkCount || 0)}/${Number(tools.actionOkCount || 0)}`
+    ].join("; ");
+  }
+
   function buildPriorAttemptDiagnosticsNote(sourceTask) {
     if (!sourceTask) return "";
     const parts = [];
@@ -96,6 +128,7 @@ async function executeEscalationReviewJob(task) {
       `Source task summary: ${compactTaskText(String(sourceTask?.resultSummary || sourceTask?.reviewSummary || sourceTask?.workerSummary || ""), 300) || "none"}`,
       `Failure classification: ${failureClassification || "unknown"}`,
       `Capability mismatch suspected: ${capabilityMismatchSuspected ? "yes" : "no"}`,
+      buildHarnessEvalPromptLine(task, sourceTask),
       `Brains already attempted: ${attemptedBrains.length ? attemptedBrains.join(", ") : "none"}`,
       `Available worker brains: ${availableWorkers.join(", ") || "none"}`,
       "Prefer retry only if you can materially improve the brief or pick an untried worker.",

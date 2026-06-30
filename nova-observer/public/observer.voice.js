@@ -22,6 +22,7 @@ const VOICE_FINGERPRINT_SAMPLE_INTERVAL_MS = 120;
 const VOICE_FINGERPRINT_RETENTION_MS = 60000;
 const VOICE_FINGERPRINT_CAPTURE_MS = 3200;
 const VOICE_FINGERPRINT_BINS = 24;
+const TRUSTED_VOICE_GRACE_MS = 5 * 60 * 1000;
 
 function getConfiguredVoiceTrustProfiles() {
   const profiles = runtimeOptions?.app?.trust?.voiceProfiles;
@@ -33,7 +34,62 @@ function hasConfiguredVoiceTrustProfiles() {
 }
 
 function getEffectiveVoiceSourceIdentity() {
+  const graceIdentity = getTrustedVoiceGraceIdentity();
+  if (graceIdentity) {
+    return graceIdentity;
+  }
   return latestVoiceSourceIdentity;
+}
+
+function isVoiceIdentityTrusted(sourceIdentity = null) {
+  if (!sourceIdentity || typeof sourceIdentity !== "object") {
+    return false;
+  }
+  return isTrustLevelAtLeast(sourceIdentity?.trustLevel, getVoiceCommandMinimumLevel());
+}
+
+function getTrustedVoiceGraceIdentity() {
+  if (!trustedVoiceGraceIdentity || Date.now() >= Number(trustedVoiceGraceUntil || 0)) {
+    trustedVoiceGraceIdentity = null;
+    trustedVoiceGraceUntil = 0;
+    return null;
+  }
+  return trustedVoiceGraceIdentity;
+}
+
+function refreshTrustedVoiceGrace(sourceIdentity = null) {
+  if (!hasConfiguredVoiceTrustProfiles() || !isVoiceIdentityTrusted(sourceIdentity)) {
+    return null;
+  }
+  trustedVoiceGraceIdentity = {
+    ...sourceIdentity,
+    trustedGrace: true,
+    trustedGraceUntil: Date.now() + TRUSTED_VOICE_GRACE_MS
+  };
+  trustedVoiceGraceUntil = trustedVoiceGraceIdentity.trustedGraceUntil;
+  return trustedVoiceGraceIdentity;
+}
+
+function formatTrustedVoiceGraceRemaining() {
+  const remainingMs = Math.max(0, Number(trustedVoiceGraceUntil || 0) - Date.now());
+  if (!remainingMs) {
+    return "";
+  }
+  const remainingMinutes = Math.floor(remainingMs / 60000);
+  const remainingSeconds = Math.ceil((remainingMs % 60000) / 1000);
+  return remainingMinutes > 0
+    ? `${remainingMinutes}m ${remainingSeconds}s`
+    : `${remainingSeconds}s`;
+}
+
+function getVoiceAuthorizationIdentity(sourceIdentity = null) {
+  if (isVoiceIdentityTrusted(sourceIdentity)) {
+    if (sourceIdentity?.trustedGrace === true) {
+      return sourceIdentity;
+    }
+    return refreshTrustedVoiceGrace(sourceIdentity) || sourceIdentity;
+  }
+  return getTrustedVoiceGraceIdentity() || sourceIdentity;
 }
 
 function formatVoiceSourceIdentity(sourceIdentity = getEffectiveVoiceSourceIdentity()) {
@@ -75,7 +131,8 @@ function updateVoiceTrustDisplay() {
       ? "voice-trust-bad"
       : "voice-trust-warn";
   voiceTrustEl.className = `voice-trust ${tone}`;
-  voiceTrustEl.textContent = `Voice trust: ${trustLevelLabel(trustLevel)} | ${label}${suffix}${commandsAllowed ? " | commands allowed" : " | commands blocked"}`;
+  const graceRemaining = sourceIdentity?.trustedGrace ? formatTrustedVoiceGraceRemaining() : "";
+  voiceTrustEl.textContent = `Voice trust: ${trustLevelLabel(trustLevel)} | ${label}${suffix}${commandsAllowed ? " | commands allowed" : " | commands blocked"}${graceRemaining ? ` | grace ${graceRemaining}` : ""}`;
 }
 
 function getVoiceCommandMinimumLevel() {
@@ -86,7 +143,138 @@ function shouldAllowVoiceCommand(sourceIdentity = getEffectiveVoiceSourceIdentit
   if (!hasConfiguredVoiceTrustProfiles()) {
     return true;
   }
-  return isTrustLevelAtLeast(sourceIdentity?.trustLevel, getVoiceCommandMinimumLevel());
+  if (isVoiceIdentityTrusted(sourceIdentity)) {
+    if (sourceIdentity?.trustedGrace !== true) {
+      refreshTrustedVoiceGrace(sourceIdentity);
+    }
+    return true;
+  }
+  return Boolean(getTrustedVoiceGraceIdentity());
+}
+
+function isVoiceUnlockCommand(transcript = "") {
+  const normalized = normalizeVoiceText(transcript);
+  if (!normalized) {
+    return false;
+  }
+  const unlockPhrase = normalizeVoiceText(getUnlockPhrase());
+  return Boolean(unlockPhrase && normalized.includes(unlockPhrase));
+}
+
+function isVoiceLockCommand(transcript = "") {
+  const normalized = normalizeVoiceText(transcript);
+  if (!normalized) {
+    return false;
+  }
+  const lockPhrase = normalizeVoiceText(getLockPhrase());
+  return Boolean(lockPhrase && normalized.includes(lockPhrase));
+}
+
+async function maybeHandleVoiceUnlockCommand(transcript = "", sourceIdentity = null, isFinal = false) {
+  if (isFinal !== true || !isVoiceUnlockCommand(transcript)) {
+    return false;
+  }
+  if (!shouldAllowVoiceCommand(sourceIdentity)) {
+    rejectUnrecognizedVoice(sourceIdentity, "unlock");
+    return true;
+  }
+  if (typeof observerApp.isUiSecurityLocked === "function" && !observerApp.isUiSecurityLocked()) {
+    const authorizationIdentity = getVoiceAuthorizationIdentity(sourceIdentity);
+    setVoiceStatus(`Already unlocked for <strong>${escapeHtml(formatVoiceSourceIdentity(authorizationIdentity) || "trusted voice")}</strong>.`);
+    setVoiceMeta(`Say ${getWakeDisplayName()} to begin listening, or ${getLockPhrase()} to lock.`);
+    resetVoiceCapture();
+    return true;
+  }
+  try {
+    const authorizationIdentity = getVoiceAuthorizationIdentity(sourceIdentity);
+    await observerApp.unlockUiSecuritySessionWithVoice?.(authorizationIdentity);
+    const greeting = `Hello ${getVoiceGreetingName(authorizationIdentity)}.`;
+    setVoiceStatus(`Unlocked for <strong>${escapeHtml(formatVoiceSourceIdentity(authorizationIdentity) || "trusted voice")}</strong>.`);
+    setVoiceMeta("Observer panel access restored.");
+    speakVoiceSecurityLine(greeting);
+    if (panelDrawerEl) {
+      setPanelOpen(true);
+    }
+  } catch (error) {
+    voiceLastError = `unlock failed: ${error.message}`;
+    setVoiceStatus("Voice unlock failed.");
+    setVoiceMeta(error.message);
+  }
+  resetVoiceCapture();
+  return true;
+}
+
+async function maybeHandleVoiceLockCommand(transcript = "", sourceIdentity = null, isFinal = false) {
+  if (isFinal !== true || !isVoiceLockCommand(transcript)) {
+    return false;
+  }
+  if (!shouldAllowVoiceCommand(sourceIdentity)) {
+    rejectUnrecognizedVoice(sourceIdentity, "lock");
+    return true;
+  }
+  trustedVoiceGraceIdentity = null;
+  trustedVoiceGraceUntil = 0;
+  try {
+    await observerApp.relockUiSecuritySession?.("voice");
+    const farewell = `Goodbye ${getVoiceGreetingName(getVoiceAuthorizationIdentity(sourceIdentity))}.`;
+    setVoiceStatus("Locked.");
+    setVoiceMeta(`${getWakeDisplayName()} locked by trusted voice.`);
+    speakVoiceSecurityLine(farewell);
+  } catch (error) {
+    voiceLastError = `lock failed: ${error.message}`;
+    setVoiceStatus("Voice lock failed.");
+    setVoiceMeta(error.message);
+  }
+  resetVoiceCapture();
+  return true;
+}
+
+const UNRECOGNIZED_VOICE_REJECTIONS = [
+  "Nice try, mystery human. The velvet rope remains very much in place.",
+  "I heard that. I just do not know you well enough to make bad decisions together.",
+  "Access denied. Charming confidence, insufficient voice print.",
+  "Nope. That voice is not on the guest list.",
+  "Bold entrance. Tiny problem: I have no idea who you are.",
+  "Security says no. I am choosing to be difficult for excellent reasons.",
+  "Unrecognized voice. Please step away from the imaginary command console.",
+  "That sounded important. It also sounded unauthorized.",
+  "I admire the attempt. I reject the premise.",
+  "Voice not recognized. My trust issues are currently load bearing."
+];
+
+function pickUnrecognizedVoiceRejection() {
+  return UNRECOGNIZED_VOICE_REJECTIONS[Math.floor(Math.random() * UNRECOGNIZED_VOICE_REJECTIONS.length)] || "Voice not recognized.";
+}
+
+function getVoiceGreetingName(sourceIdentity = null) {
+  const raw = String(sourceIdentity?.speakerLabel || sourceIdentity?.label || "there").trim() || "there";
+  return raw.split(/\s+/)[0] || raw;
+}
+
+function speakVoiceSecurityLine(text = "") {
+  const message = String(text || "").trim();
+  if (!message || typeof window.ObserverApp?.speakWakeAcknowledgement !== "function") {
+    return;
+  }
+  window.ObserverApp.speakWakeAcknowledgement(message);
+}
+
+function rejectUnrecognizedVoice(sourceIdentity = null, context = "voice") {
+  const rejection = pickUnrecognizedVoiceRejection();
+  resetVoiceCapture();
+  setVoiceStatus(`${escapeHtml(rejection)}`);
+  setVoiceMeta(`Voice ${context} blocked from ${formatVoiceSourceIdentity(sourceIdentity) || "Unknown speaker"}. Minimum level is ${trustLevelLabel(getVoiceCommandMinimumLevel())}.`);
+  speakVoiceSecurityLine(rejection);
+  window.setTimeout(() => {
+    if (voiceListeningEnabled && !voicePausedForTts) {
+      startVoiceListeningNow();
+      scheduleVoiceRestart(VOICE_RESTART_AFTER_SUBMIT_MS);
+    }
+  }, VOICE_RESTART_AFTER_SUBMIT_MS);
+}
+
+function blockUntrustedVoiceWake(sourceIdentity = null) {
+  rejectUnrecognizedVoice(sourceIdentity, "wake");
 }
 
 function normalizeVoiceFingerprint(vector = []) {
@@ -313,6 +501,9 @@ function resolveVoiceSourceIdentityFromSignature(signature = []) {
   const match = matchVoiceFingerprint(signature);
   const sourceIdentity = buildVoiceSourceIdentity(match);
   latestVoiceSourceIdentity = sourceIdentity;
+  if (isVoiceIdentityTrusted(sourceIdentity)) {
+    refreshTrustedVoiceGrace(sourceIdentity);
+  }
   return sourceIdentity;
 }
 
@@ -396,10 +587,10 @@ function updateVoiceUi() {
   if (!voiceListeningEnabled) {
     visualMode = "off";
     setVoiceStatus(renderLanguageString("voice.passiveOff", `Passive listening is off. Say <strong>{{botName}}</strong> to begin, then <strong>{{stopPhrase}}</strong> to finish once enabled.`, {
-      botName: escapeHtml(getBotName()),
+      botName: escapeHtml(getWakeDisplayName()),
       stopPhrase: escapeHtml(getStopPhrase())
     }));
-    setVoiceMeta(`Wake phrase: ${getBotName()} | Stop phrase: ${getStopPhrase()}${speakerMeta}${voiceLastError ? ` | Last error: ${voiceLastError}` : ""}`);
+    setVoiceMeta(`Wake phrase: ${getWakeDisplayName()} | Stop phrase: ${getStopPhrase()}${speakerMeta}${voiceLastError ? ` | Last error: ${voiceLastError}` : ""}`);
     return;
   }
   if (pendingVoiceQuestionInviteTaskId && !voiceWakeActive && !pendingVoiceQuestionTaskId) {
@@ -407,8 +598,8 @@ function updateVoiceUi() {
     const remainingMs = Math.max(0, pendingVoiceQuestionInviteExpiresAt - Date.now());
     const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
     const invitationPrompt = pendingVoiceQuestionInviteExpiresAt > Date.now()
-      ? `I have a question waiting. Say <strong>Yes ${escapeHtml(getBotName())}</strong> within <strong>${remainingSeconds}s</strong> if you have a moment.`
-      : `I have a question waiting. Say <strong>Yes ${escapeHtml(getBotName())}</strong> if you have a moment.`;
+      ? `I have a question waiting. Say <strong>Yes ${escapeHtml(getWakeDisplayName())}</strong> within <strong>${remainingSeconds}s</strong> if you have a moment.`
+      : `I have a question waiting. Say <strong>Yes ${escapeHtml(getWakeDisplayName())}</strong> if you have a moment.`;
     setVoiceStatus(invitationPrompt);
     setVoiceMeta(`Question waiting: ${pendingVoiceQuestionInviteText || "Nova is waiting for your direction."}${speakerMeta}${voiceLastError ? ` | Last error: ${voiceLastError}` : ""}`);
     window.dispatchEvent(new CustomEvent("observer:voice-state", {
@@ -443,7 +634,7 @@ function updateVoiceUi() {
   }
   visualMode = "passive";
   setVoiceStatus(renderLanguageString("voice.passiveOn", `Passive listening is on. Say <strong>{{botName}}</strong> to begin.`, {
-    botName: escapeHtml(getBotName())
+    botName: escapeHtml(getWakeDisplayName())
   }));
   setVoiceMeta(`Last heard: ${voiceLastTranscript || "nothing yet"}${speakerMeta}${voiceLastError ? ` | Last error: ${voiceLastError}` : ""}`);
   window.dispatchEvent(new CustomEvent("observer:voice-state", {
@@ -511,7 +702,7 @@ function timeoutPendingVoiceQuestionInvite() {
   }
   clearPendingVoiceQuestionInvite({ preserveStatus: true, preserveTask: true });
   setVoiceStatus("Question invitation timed out. The question is still waiting in the Questions section.");
-  setVoiceMeta(`Say ${getBotName()} to talk to Nova, or start Question Time manually when you're ready.`);
+  setVoiceMeta(`Say ${getWakeDisplayName()} to talk to Nova, or start Question Time manually when you're ready.`);
 }
 
 function armPendingVoiceQuestionInvite(task) {
@@ -837,7 +1028,7 @@ function stripVoiceWakePrefix(text) {
     return "";
   }
   return source
-    .replace(new RegExp(`^\\s*${escapeRegExp(getBotName())}\\b`, "i"), "")
+    .replace(new RegExp(`^\\s*${escapeRegExp(getWakeDisplayName())}\\b`, "i"), "")
     .replace(/^[:,.!?\s-]+/, "")
     .trim();
 }
@@ -1049,7 +1240,7 @@ function isVoiceQuestionInvitationAcceptance(text = "") {
   if (!normalized) {
     return false;
   }
-  const botName = normalizeVoiceText(getBotName());
+  const botName = normalizeVoiceText(getWakeDisplayName());
   const botPattern = escapeRegExp(botName).replace(/\s+/g, "\\s+");
   return new RegExp(`^(yes|yeah|yep|sure|ok|okay|please|go ahead|i do|i do have a moment|now is good|this is a good time)[,\\s-]*${botPattern}$`, "i").test(normalized)
     || new RegExp(`^${botPattern}[,\\s-]*(yes|yeah|yep|sure|ok|okay|go ahead)$`, "i").test(normalized);
@@ -1075,6 +1266,19 @@ async function submitVoicePrompt(text) {
     }, VOICE_RESTART_AFTER_SUBMIT_MS);
     return;
   }
+  sourceIdentity = getVoiceAuthorizationIdentity(sourceIdentity);
+  if (
+    typeof observerApp.isUiSecurityLocked === "function"
+    && observerApp.isUiSecurityLocked()
+    && typeof observerApp.unlockUiSecuritySessionWithVoice === "function"
+  ) {
+    try {
+      await observerApp.unlockUiSecuritySessionWithVoice(sourceIdentity);
+    } catch (error) {
+      voiceLastError = `voice unlock refresh failed: ${error.message}`;
+    }
+  }
+  observerApp.noteUiSecurityActivity?.();
   let extensionResult = null;
   try {
     setVoiceMeta(`Preparing voice request for extensions. Speaker: ${formatVoiceSourceIdentity(sourceIdentity) || "Unknown speaker"}${voiceLastError ? ` | Last error: ${voiceLastError}` : ""}`);
@@ -1130,6 +1334,14 @@ async function submitVoicePrompt(text) {
       voiceStopRequested = false;
     }
   }
+  if (
+    runBtn.disabled
+    && typeof observerApp.isUiSecurityLocked === "function"
+    && observerApp.isUiSecurityLocked()
+  ) {
+    await observerApp.syncUiSecuritySession?.({ silent: true }).catch(() => null);
+    observerApp.updateRunButtonState?.();
+  }
   if (runInFlight || runBtn.disabled) {
     pendingSubmissionPrompts.push({
       text: cleaned,
@@ -1177,7 +1389,7 @@ async function submitVoiceFollowUpAnswer(text) {
     return;
   }
   const captureStartedAt = voiceCommandCaptureStartedAt;
-  const sourceIdentity = resolveVoiceSourceIdentityForCommandCapture(captureStartedAt);
+  let sourceIdentity = resolveVoiceSourceIdentityForCommandCapture(captureStartedAt);
   if (!shouldAllowVoiceCommand(sourceIdentity)) {
     resetVoiceCapture();
     clearPendingVoiceQuestionWindow({ preserveStatus: true, preserveQuestionTime: true, preserveTask: true });
@@ -1191,6 +1403,7 @@ async function submitVoiceFollowUpAnswer(text) {
     }, VOICE_RESTART_AFTER_SUBMIT_MS);
     return;
   }
+  sourceIdentity = getVoiceAuthorizationIdentity(sourceIdentity);
   voiceSubmissionCooldownUntil = Date.now() + VOICE_SUBMISSION_COOLDOWN_MS;
   voiceLastTranscript = cleaned;
   resetVoiceCapture();
@@ -1342,7 +1555,7 @@ function submitPresenceVoiceTranscript(detail = {}) {
   });
 }
 
-function handleVoiceTranscript(text, isFinal) {
+async function handleVoiceTranscript(text, isFinal) {
   if (voiceStopRequested || Date.now() < voiceSubmissionCooldownUntil) {
     return;
   }
@@ -1357,6 +1570,18 @@ function handleVoiceTranscript(text, isFinal) {
   const sourceIdentity = hasConfiguredVoiceTrustProfiles()
     ? resolveVoiceSourceIdentityForTranscriptSegment(voiceWakeActive ? voiceCommandCaptureStartedAt || voiceTranscriptSegmentStartedAt : voiceTranscriptSegmentStartedAt)
     : null;
+  if (await maybeHandleVoiceUnlockCommand(transcript, sourceIdentity, isFinal)) {
+    return;
+  }
+  if (await maybeHandleVoiceLockCommand(transcript, sourceIdentity, isFinal)) {
+    return;
+  }
+  if (isFinal !== true && (isVoiceUnlockCommand(transcript) || isVoiceLockCommand(transcript))) {
+    voiceLastTranscript = transcript;
+    setVoiceStatus("Voice security command heard.");
+    setVoiceMeta("Waiting for final transcript.");
+    return;
+  }
   const transcriptDetail = {
     text: transcript,
     isFinal: isFinal === true,
@@ -1373,6 +1598,13 @@ function handleVoiceTranscript(text, isFinal) {
   const stopPhrase = normalizeVoiceText(getStopPhrase());
 
   if (!voiceWakeActive && pendingVoiceQuestionInviteTaskId && isVoiceQuestionInvitationAcceptance(transcript)) {
+    if (!shouldAllowVoiceCommand(sourceIdentity)) {
+      blockUntrustedVoiceWake(sourceIdentity);
+      if (isFinal) {
+        voiceTranscriptSegmentStartedAt = 0;
+      }
+      return;
+    }
     voiceLastTranscript = transcript;
     const taskId = String(pendingVoiceQuestionInviteTaskId || "").trim();
     clearPendingVoiceQuestionInvite({ preserveStatus: true });
@@ -1394,8 +1626,27 @@ function handleVoiceTranscript(text, isFinal) {
   if (!voiceWakeActive) {
     const wakeIndex = normalizedTranscript.indexOf(wakePhrase);
     if (wakeIndex >= 0) {
-      if (hasConfiguredVoiceTrustProfiles()) {
-        resolveVoiceSourceIdentityForTranscriptSegment(voiceTranscriptSegmentStartedAt);
+      const wakeSourceIdentity = hasConfiguredVoiceTrustProfiles()
+        ? resolveVoiceSourceIdentityForTranscriptSegment(voiceTranscriptSegmentStartedAt)
+        : sourceIdentity;
+      if (!shouldAllowVoiceCommand(wakeSourceIdentity)) {
+        blockUntrustedVoiceWake(wakeSourceIdentity);
+        if (isFinal) {
+          voiceTranscriptSegmentStartedAt = 0;
+        }
+        return;
+      }
+      if (typeof observerApp.isUiSecurityLocked === "function" && observerApp.isUiSecurityLocked()) {
+        if (isFinal) {
+          await maybeHandleVoiceUnlockCommand(transcript, wakeSourceIdentity, true);
+          setVoiceStatus(`Say <strong>${escapeHtml(getUnlockPhrase())}</strong> to unlock.`);
+          setVoiceMeta(`Recognized ${formatVoiceSourceIdentity(wakeSourceIdentity) || "trusted voice"}, but ${getWakeDisplayName()} only begins listening after unlock.`);
+        } else {
+          setVoiceStatus(`Locked. Say <strong>${escapeHtml(getUnlockPhrase())}</strong> to unlock.`);
+          setVoiceMeta(`Wake phrase heard while locked.`);
+        }
+        voiceTranscriptSegmentStartedAt = 0;
+        return;
       }
       voiceWakeActive = true;
       voiceCommandCaptureStartedAt = Date.now();
@@ -1507,13 +1758,13 @@ function initVoiceRecognition() {
         continue;
       }
       if (result.isFinal) {
-        handleVoiceTranscript(transcript, true);
+        void handleVoiceTranscript(transcript, true);
       } else {
         interimTranscript = mergeVoiceTranscript(interimTranscript, transcript);
       }
     }
     if (interimTranscript) {
-      handleVoiceTranscript(interimTranscript, false);
+      void handleVoiceTranscript(interimTranscript, false);
     }
   };
 

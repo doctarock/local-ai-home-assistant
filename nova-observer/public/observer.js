@@ -59,6 +59,7 @@ const {
   renderAttachmentList,
   renderHistory,
   renderPayloads,
+  reportQueuedRequestEvent,
   reportTaskEvent,
   refreshRegressionCommandUi,
   runRegressionSuites,
@@ -96,13 +97,28 @@ function dispatchDirectWorkerHandoff(phase = "started", detail = {}) {
 
 const startAgentRun = async (messageOverride = "", options = {}) => {
   unlockSpeech();
-  const message = String(messageOverride || document.getElementById("msg").value || "").trim();
   const sourceIdentity = options?.sourceIdentity && typeof options.sourceIdentity === "object"
     ? options.sourceIdentity
     : null;
   const metadata = options?.metadata && typeof options.metadata === "object"
     ? options.metadata
     : {};
+  if (typeof observerApp.isUiSecurityLocked === "function" && observerApp.isUiSecurityLocked()) {
+    await observerApp.syncUiSecuritySession?.({ silent: true }).catch(() => null);
+  }
+  if (
+    typeof observerApp.isUiSecurityLocked === "function"
+    && observerApp.isUiSecurityLocked()
+    && sourceIdentity?.kind === "voice"
+    && observerApp.isTrustLevelAtLeast?.(sourceIdentity.trustLevel, "trusted")
+  ) {
+    await observerApp.unlockUiSecuritySessionWithVoice?.(sourceIdentity).catch(() => null);
+  }
+  if (typeof observerApp.isUiSecurityLocked === "function" && observerApp.isUiSecurityLocked()) {
+    throw new Error("Observer is locked. Unlock with a trusted voice command first.");
+  }
+  observerApp.noteUiSecurityActivity?.();
+  const message = String(messageOverride || document.getElementById("msg").value || "").trim();
   if (runInFlight) {
     if (message) {
       pendingSubmissionPrompts.push((sourceIdentity || Object.keys(metadata).length)
@@ -262,6 +278,12 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
         brainLabel: destinationLabel || "worker",
         model: "task queue"
       }, { priority: true });
+      reportQueuedRequestEvent?.({
+        taskRefs: [taskRef],
+        destinationLabel,
+        message: triageMessage,
+        source: sourceIdentity?.kind === "voice" || metadata?.voiceProvider ? "voice" : "intake"
+      });
       await loadTaskQueue();
       document.getElementById("msg").value = "";
       selectedAttachments = [];
@@ -321,18 +343,24 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
     const result = parsed?.result || parsed;
     const meta = result?.meta || {};
     const agentMeta = meta?.agentMeta || {};
+    const queuedTasks = Array.isArray(j.tasks) ? j.tasks : [];
+    const queuedTaskRefs = queuedTasks
+      .map((task) => String(task?.codename || formatEntityRef("task", task?.id || "unknown")).trim())
+      .filter(Boolean);
     const responseContent = renderPayloads(result?.payloads);
     const hasTextResponse = Boolean((responseContent.displayText || "").trim());
     const artifactSummary = Array.isArray(j.outputFiles) && j.outputFiles.length
       ? `No text response. Generated files: ${j.outputFiles.map((file) => file.path || file.name).join(", ")}`
       : "";
 
-    runStatusEl.textContent = parsed?.status || (j.ok ? "ok" : "error");
+    runStatusEl.textContent = queuedTasks.length ? "queued" : (parsed?.status || (j.ok ? "ok" : "error"));
     runBrainEl.textContent = j.brain?.label || brain?.label || "-";
     runModelEl.textContent = j.brain?.model || agentMeta?.model || "-";
     runDurationEl.textContent = meta?.durationMs ? `${meta.durationMs} ms` : "-";
     resultEl.textContent = JSON.stringify(j, null, 2);
-    hintEl.textContent = j.ok
+    hintEl.textContent = queuedTasks.length
+      ? `Queued ${queuedTaskRefs.join(", ") || `${queuedTasks.length} task${queuedTasks.length === 1 ? "" : "s"}`} for worker execution.`
+      : j.ok
       ? `Run completed with ${j.brain?.label || brain?.label || "unknown brain"} on ${j.network || "unknown network"} and attachments: ${(j.attachments || []).map((file) => file.name).join(", ") || "none"}.`
       : (j.stderr || j.error || "Run failed.");
     enqueueUpdate({
@@ -341,10 +369,20 @@ const startAgentRun = async (messageOverride = "", options = {}) => {
       displayText: responseContent.displayText || artifactSummary || (j.ok ? "Run completed without payload text." : (j.stderr || j.error || "Run failed.")),
       spokenText: responseContent.spokenText || (artifactSummary ? `[nova:emotion=celebrate] ${artifactSummary}` : ""),
       rawText: responseContent.rawText || "",
-      status: parsed?.status || (j.ok ? "ok" : "error"),
+      status: queuedTasks.length ? "queued" : (parsed?.status || (j.ok ? "ok" : "error")),
       brainLabel: j.brain?.label || brain?.label || "",
       model: j.brain?.model || agentMeta?.model || ""
     }, { priority: true });
+    if (queuedTasks.length) {
+      reportQueuedRequestEvent?.({
+        tasks: queuedTasks,
+        taskRefs: queuedTaskRefs,
+        destinationLabel: queuedTasks[0]?.requestedBrainLabel || queuedTasks[0]?.requestedBrainId || "worker",
+        message: effectiveMessage,
+        source: sourceIdentity?.kind === "voice" || metadata?.voiceProvider ? "voice" : "intake"
+      });
+      await loadTaskQueue();
+    }
     if (j.ok && !hasTextResponse) {
       runStatusEl.textContent = "no_text";
       hintEl.textContent = artifactSummary || `${brain?.label || "Agent"} finished without returning payload text. Consider queueing this task to a stronger brain.`;
@@ -621,6 +659,12 @@ saveToolsBtn.onclick = saveToolConfig;
 const refreshAgentSkillsBtn = document.getElementById("refreshAgentSkillsBtn");
 if (refreshAgentSkillsBtn) refreshAgentSkillsBtn.onclick = loadAgentSkills;
 refreshPluginsBtn.onclick = loadPluginManagerPanel;
+if (saveProfileSelectionBtn) {
+  saveProfileSelectionBtn.onclick = () => observerApp.saveSelectedProfile?.({ restart: false });
+}
+if (saveProfileRestartBtn) {
+  saveProfileRestartBtn.onclick = () => observerApp.saveSelectedProfile?.({ restart: true });
+}
 if (installPluginUploadBtn) {
   installPluginUploadBtn.onclick = installUploadedPluginPackage;
 }
@@ -662,6 +706,7 @@ addCustomBrainBtn.onclick = addCustomBrainDraft;
 setPanelOpen(loadPanelOpenPreference());
 setPanelFullscreen(loadPanelFullscreenPreference());
 applyTabIcons();
+observerApp.bindUiSecurityActivityListeners?.();
 
 panelToggleBtn.onclick = () => {
   setPanelOpen(!panelDrawerEl.classList.contains("open"));
@@ -743,3 +788,6 @@ _scheduleStatusRefresh();
 // SSE handles real-time task/cron delivery; these are reconciliation safety nets only.
 setInterval(pollCronEvents, 30000);
 setInterval(pollTaskEvents, 30000);
+setInterval(() => {
+  observerApp.syncUiSecuritySession?.({ silent: true }).catch(() => {});
+}, 10000);

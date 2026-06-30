@@ -1,6 +1,100 @@
 const LOOP_LESSONS_STOP_WORDS = new Set(["with", "that", "this", "from", "have", "will", "they", "your", "when", "been", "also", "into", "more", "than", "then", "each", "such", "both", "very", "just", "over", "only", "most", "some", "what", "like", "time", "even", "back", "after", "before", "should", "could", "would", "about", "there", "their", "which", "these", "those"]);
 const LOOP_LESSONS_CACHE = { content: null, readAt: 0 };
 const LOOP_LESSONS_CACHE_TTL_MS = 60000;
+const FOCUSED_CONTEXT_MAX_LINE = 600;
+const FOCUSED_CONTEXT_MAX_TOTAL = 2600;
+
+function compactLine(value = "", limit = FOCUSED_CONTEXT_MAX_LINE) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, Math.max(20, limit - 3)).trim()}...`;
+}
+
+function buildToolEnvelopeExample(toolName = "read_document", args = {}, { mode = "worker" } = {}) {
+  const envelope = {
+    assistant_message: "Calling the requested tool.",
+    tool_calls: [
+      {
+        id: "call_1",
+        type: "function",
+        function: {
+          name: String(toolName || "read_document").trim() || "read_document",
+          arguments: JSON.stringify(args || {})
+        }
+      }
+    ],
+    final: false
+  };
+  if (mode === "intake") {
+    envelope.tasks = [];
+    envelope.action = "reply_only";
+    envelope.reason = "Using a light observer tool before replying.";
+  }
+  return JSON.stringify(envelope);
+}
+
+function chooseConcreteToolEnvelopeExample(toolNames = new Set(), { mode = "worker" } = {}) {
+  const has = (name) => toolNames?.has?.(name);
+  if (mode === "intake" && has("get_gpu_status")) {
+    return buildToolEnvelopeExample("get_gpu_status", {}, { mode });
+  }
+  if (has("read_document")) {
+    return buildToolEnvelopeExample("read_document", {
+      path: "/home/nova/.observer-sandbox/workspace/simple-check-project/directive.md"
+    }, { mode });
+  }
+  if (has("list_files")) {
+    return buildToolEnvelopeExample("list_files", {
+      path: "/home/nova/.observer-sandbox/workspace/simple-check-project"
+    }, { mode });
+  }
+  if (has("edit_file")) {
+    return buildToolEnvelopeExample("edit_file", {
+      path: "/home/nova/.observer-sandbox/workspace/simple-check-project/directive.md",
+      oldText: "Check this box [ ]",
+      newText: "Check this box [x]"
+    }, { mode });
+  }
+  return buildToolEnvelopeExample("search_documents", {
+    query: "project status"
+  }, { mode });
+}
+
+function buildToolEnvelopeContractLines({
+  mode = "worker",
+  toolNames = new Set(),
+  includeFinalReminder = true
+} = {}) {
+  const toolExample = chooseConcreteToolEnvelopeExample(toolNames, { mode });
+  const toolLine = mode === "intake"
+    ? "If you need a light observer tool, return a non-final assistant envelope with assistant_message, tool_calls, tasks, action, reason, and final=false."
+    : "If you need tools, return a non-final assistant envelope with assistant_message, tool_calls, and final=false.";
+  const finalLine = mode === "intake"
+    ? "When finished, return a final envelope with assistant_message, final_text, tool_calls:[], tasks, action, reason, and final:true."
+    : "When finished, return a final envelope with assistant_message, final_text, tool_calls:[], and final:true.";
+  return [
+    toolLine,
+    "tool_calls must be an array of OpenAI-style function calls.",
+    "function.arguments must be a JSON-encoded string. Do not return only the argument object.",
+    `Concrete non-final tool envelope example: ${toolExample}`,
+    includeFinalReminder ? finalLine : ""
+  ].filter(Boolean);
+}
+
+function fallbackExtractTaskDirectiveValue(message = "", label = "") {
+  const normalizedLabel = String(label || "").trim().replace(/:$/, "");
+  if (!normalizedLabel) return "";
+  const escaped = normalizedLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}:\\s*([\\s\\S]*?)(?=\\n\\s*[A-Z][A-Za-z0-9 /_-]{2,}:\\s*|$)`, "im");
+  return String(message || "").match(pattern)?.[1]?.trim() || "";
+}
+
+function extractDirectiveValue(extractTaskDirectiveValue, message = "", label = "") {
+  const direct = typeof extractTaskDirectiveValue === "function"
+    ? String(extractTaskDirectiveValue(message, label) || "").trim()
+    : "";
+  return direct || fallbackExtractTaskDirectiveValue(message, label);
+}
 
 export function createObserverWorkerPrompting(context = {}) {
   const {
@@ -18,6 +112,7 @@ export function createObserverWorkerPrompting(context = {}) {
     fs,
     getAgentPersonaName,
     getObserverConfig,
+    getActiveProfile = () => ({}),
     appendHookTrace = async () => null,
     getPluginToolsByScope = () => [],
     getProjectNoChangeMinimumTargets,
@@ -33,6 +128,17 @@ export function createObserverWorkerPrompting(context = {}) {
     parseToolCallArgs,
     queryRepairLessons = async () => []
   } = context;
+
+  function buildProfilePromptLines() {
+    const profile = getActiveProfile() || {};
+    const lines = Array.isArray(profile.systemPromptAddons)
+      ? profile.systemPromptAddons.map((line) => String(line || "").trim()).filter(Boolean)
+      : [];
+    if (profile.runtime?.allowGeneralAssistant === false) {
+      lines.push("The active profile disables general assistant behavior by default; stay inside the profile's operating mode unless the user explicitly asks otherwise.");
+    }
+    return lines;
+  }
 
   async function readLoopLessonsNote(taskMessage = "") {
     if (!fs || !loopLessonsHostPath) return "";
@@ -103,12 +209,89 @@ export function createObserverWorkerPrompting(context = {}) {
         args.path
         || args.target
         || args.filePath
+        || args.file_path
         || args.filepath
         || args.file
         || args.filename
         || ""
       ).trim()
     );
+  }
+
+  function buildFocusedWorkerUserRequest({
+    message = "",
+    preset = "autonomous",
+    internalJobType = "",
+    runtimeNotesExtra = []
+  } = {}) {
+    const text = String(message || "").trim();
+    const normalizedInternalJobType = String(internalJobType || "").trim();
+    const isQueuedExecution = String(preset || "").trim() === "queued-task";
+    const projectCycleMessage = normalizedInternalJobType === "project_cycle"
+      || (!normalizedInternalJobType && typeof isProjectCycleMessage === "function" && isProjectCycleMessage(text));
+    if (!text || (!projectCycleMessage && text.length <= FOCUSED_CONTEXT_MAX_TOTAL)) {
+      return text;
+    }
+
+    const objective = extractDirectiveValue(extractTaskDirectiveValue, text, "Objective:");
+    const inspectFirst = extractDirectiveValue(extractTaskDirectiveValue, text, "Inspect first:");
+    const expectedFirstMove = extractDirectiveValue(extractTaskDirectiveValue, text, "Expected first move:");
+    const projectAssessment = extractDirectiveValue(extractTaskDirectiveValue, text, "Project assessment:");
+    const constraints = extractDirectiveValue(extractTaskDirectiveValue, text, "Constraints:")
+      || extractDirectiveValue(extractTaskDirectiveValue, text, "Requirements:");
+    const namedTargets = (typeof extractConcreteTaskFileTargets === "function" ? extractConcreteTaskFileTargets(text) : []).slice(0, 6);
+    const noteLines = (Array.isArray(runtimeNotesExtra) ? runtimeNotesExtra : [])
+      .map((line) => compactLine(line, 240))
+      .filter(Boolean)
+      .slice(0, 3);
+    const lines = [
+      projectCycleMessage ? "Focused queued project-cycle request." : "Focused queued worker request.",
+      objective ? `Current objective: ${compactLine(objective)}` : `Current objective: ${compactLine(text, 900)}`,
+      inspectFirst ? `Inspect first: ${compactLine(inspectFirst, 360)}` : "",
+      expectedFirstMove ? `Expected first move: ${compactLine(expectedFirstMove, 360)}` : "",
+      projectAssessment ? `Relevant project assessment: ${compactLine(projectAssessment, 500)}` : "",
+      constraints ? `Relevant constraints: ${compactLine(constraints, 500)}` : "",
+      namedTargets.length ? `Explicit file targets: ${namedTargets.join(", ")}` : "",
+      noteLines.length ? `Retrieved runtime notes: ${noteLines.join(" | ")}` : "",
+      isQueuedExecution
+        ? "Completion standard: use the available tools, then finish only after a concrete workspace change/artifact or a grounded no-change conclusion with inspected paths. After one or two successful read-only calls, either act, validate, request missing capability, ask one focused QUESTION FOR USER, or name the exact missing fact before reading again."
+        : ""
+    ].filter(Boolean);
+    const focused = lines.join("\n").slice(0, FOCUSED_CONTEXT_MAX_TOTAL).trim();
+    return focused || text;
+  }
+
+  function buildWorkerToolAccess({
+    message = "",
+    preset = "autonomous",
+    internalJobType = "",
+    runtimeNotesExtra = []
+  } = {}) {
+    const normalizedInternalJobType = String(internalJobType || "").trim();
+    const focusedUserRequest = buildFocusedWorkerUserRequest({
+      message,
+      preset,
+      internalJobType: normalizedInternalJobType,
+      runtimeNotesExtra
+    });
+    const pluginTools = getPluginToolsByScope("worker");
+    const toolSelection = typeof selectToolsForTask === "function"
+      ? selectToolsForTask(focusedUserRequest || message, normalizedInternalJobType, WORKER_TOOLS, pluginTools)
+      : { tools: WORKER_TOOLS, pluginTools, confident: false };
+    const effectiveWorkerTools = Array.isArray(toolSelection.tools) ? toolSelection.tools : [];
+    const effectivePluginTools = Array.isArray(toolSelection.pluginTools) ? toolSelection.pluginTools : [];
+    const toolNames = [
+      ...effectiveWorkerTools,
+      ...effectivePluginTools
+    ].map((tool) => String(tool?.name || "").trim()).filter(Boolean);
+    return {
+      focusedUserRequest,
+      toolSelection,
+      effectiveWorkerTools,
+      effectivePluginTools,
+      effectiveToolNames: new Set(toolNames),
+      toolNames
+    };
   }
 
   function objectiveAllowsPlanningDocumentOutcome(objective = "") {
@@ -144,10 +327,10 @@ export function createObserverWorkerPrompting(context = {}) {
     const isProjectCycle = normalizedInternalJobType === "project_cycle"
       || (!normalizedInternalJobType && typeof isProjectCycleMessage === "function" && isProjectCycleMessage(text));
     const mentionsSkillsOrToolbelt = /\b(skill library|skills library|nova skills|clawhub|toolbelt|missing tool|missing capability|request tool|request skills?)\b/i.test(text);
-    const objectiveText = extractTaskDirectiveValue(text, "Objective:");
+    const objectiveText = extractDirectiveValue(extractTaskDirectiveValue, text, "Objective:");
     const planningObjective = objectiveAllowsPlanningDocumentOutcome(objectiveText);
-    const inspectFirstTarget = extractTaskDirectiveValue(text, "Inspect first:");
-    const expectedFirstMove = extractTaskDirectiveValue(text, "Expected first move:");
+    const inspectFirstTarget = extractDirectiveValue(extractTaskDirectiveValue, text, "Inspect first:");
+    const expectedFirstMove = extractDirectiveValue(extractTaskDirectiveValue, text, "Expected first move:");
     const looksCodeHeavy = forceToolUse || /\b(project|repo|repository|code|implement|implementation|refactor|debug|bug|fix|patch|todo|fixme|script|test|tests|api|backend|frontend)\b/.test(lower);
     const isQueuedExecution = String(preset || "").trim() === "queued-task";
     const capabilityProfile = inferTaskCapabilityProfile({
@@ -162,6 +345,7 @@ export function createObserverWorkerPrompting(context = {}) {
       return [
         "You have unstructured free time. Use tools to do something genuinely interesting: browse the web, write a thought, sketch a project idea, or create a short piece of writing.",
         "Before you return final=true, you must call update_daily_personal_notes with a concrete note for today.",
+        "The note must be specific to this run and must not repeat the recent personal-note wording shown in the task.",
         "Do not describe what you plan to do in final_text. Describe what you actually did.",
         "Natural, first-person language is fine in final_text. There are no grammar restrictions for recreational writing.",
         "Never wrap your JSON response in markdown fences.",
@@ -184,11 +368,12 @@ export function createObserverWorkerPrompting(context = {}) {
       "Never wrap your JSON response in markdown fences.",
       "Do not output headings, bullet lists, or analysis before the JSON object.",
       "Keep assistant_message short and factual, ideally one sentence under 20 words.",
-      "Prefer read_document for document review, summaries, webpages, email files, and attachments.",
+      "Prefer an available document-reading tool for document review, summaries, webpages, email files, and attachments.",
       "For large files, long web pages, or long documents, read them in chunks. Start with the first chunk and only request later chunks when necessary.",
       "After reading a chunk, keep a running summary in your own reasoning and avoid rereading earlier chunks unless necessary.",
-      "For file-based tools such as read_document, list_files, write_file, and edit_file, always include the explicit full file or directory path in the path field. Do not omit the path and do not rely on prior context.",
-      "If you call write_file, include the full intended content. Do not call write_file with empty content.",
+      "After one or two successful read-only tool calls, do not continue passive inspection unless you can name the exact missing fact that blocks action.",
+      "For file-based tools, always include the explicit full file or directory path in the path field. Do not omit the path and do not rely on prior context.",
+      "If you call a file-writing tool, include the full intended content. Do not call a file-writing tool with empty content.",
       "Do not answer with only filenames or a bare artifact list.",
       "If you created files, mention what they are for in one concise sentence.",
       "If the current toolbelt seems insufficient, do not keep orbiting the task. Search the skill library once, inspect the most relevant skill, and use request_skill_installation or request_tool_addition instead of repeating broad inspection."
@@ -196,7 +381,9 @@ export function createObserverWorkerPrompting(context = {}) {
     lines.push(...buildTaskCapabilityPromptLines(capabilityProfile));
 
     if (isProjectCycle) {
-      lines.push("For project-cycle work: read PROJECT-TODO.md once, then move on to concrete inspection such as list_files, package manifests, source files, role-task boards, or TODO/FIXME locations. Do not keep rereading the same planning files unless they changed.");
+      lines.push("Project-cycle checkpoint sequence: inspect the named target, choose one concrete next action, execute that action, verify the result, then finish. If you cannot execute, use the exact no-change or QUESTION FOR USER contract.");
+      lines.push("For project-cycle work: after one or two successful inspection tool calls, the next non-final tool call should normally be an available edit/write/move or validation tool, or a different concrete target. Do not keep reading planning context.");
+      lines.push("For project-cycle work: read PROJECT-TODO.md once, then move on to concrete inspection such as listing project files, package manifests, source files, role-task boards, or TODO/FIXME locations. Do not keep rereading the same planning files unless they changed.");
       lines.push("For project-cycle work: also maintain PROJECT-ROLE-TASKS.md as a running role-based task board by adding, checking off, or refining concrete role tasks.");
       lines.push("For project-cycle work: use only standard markdown checkbox format in PROJECT-TODO.md and PROJECT-ROLE-TASKS.md. Unchecked items must be written as '- [ ] task text' and completed items as '- [x] task text'. There are exactly two states: pending '- [ ]' and done '- [x]'. Keep items as '- [ ]' while work is in progress — the task queue already tracks what is currently running, so the TODO file only needs to record whether the work is finished. Do not use [y], [n], bare [x] without a bullet, or any other intermediate marker.");
       lines.push("For project-cycle work: if the available project input is mainly a zip or other archive and the real working files are not extracted yet, using unzip to unpack it inside the workspace is a valid concrete first move.");
@@ -223,14 +410,14 @@ export function createObserverWorkerPrompting(context = {}) {
       lines.push("For project-cycle work: planning files and broad repo listings do not count as concrete implementation inspection by themselves.");
       lines.push(`If the planning files are not enough to act, inspect the repo structure and at least ${minConcreteTargets} distinct concrete implementation files or directories before concluding no change is possible.`);
       lines.push("For project-cycle work: after the first inspection step, do not call the exact same tool on the exact same planning file again unless the file was modified.");
-      lines.push("For project-cycle work: prefer list_files on the project root, then inspect a concrete implementation file, package manifest, or TODO/FIXME location before attempting a final answer.");
+      lines.push("For project-cycle work: prefer an available directory-listing tool on the project root, then inspect a concrete implementation file, package manifest, or TODO/FIXME location before attempting a final answer.");
       if (planningObjective) {
         lines.push("For project-cycle work: when the objective is to clarify or record the next concrete step, updating PROJECT-TODO.md and PROJECT-ROLE-TASKS.md with an evidence-backed next action counts as valid concrete progress for that pass.");
         lines.push("For project-cycle work: do not stop at a recommendation in final_text alone when this planning objective is actionable. Write the chosen next step into the planning files.");
       } else {
         lines.push("For project-cycle work: do not edit PROJECT-TODO.md or PROJECT-ROLE-TASKS.md until after you have already changed a real implementation file, test file, or concrete user-facing artifact for this same task.");
       }
-      lines.push("For project-cycle work: if you make a repo change through edit_file, write_file, move_path, or shell_command, mention the changed file in final_text and update the project tracking documents in the same pass.");
+      lines.push("For project-cycle work: if you make a repo change through an available write, edit, move, or validation tool, mention the changed file in final_text and update the project tracking documents in the same pass.");
       lines.push(`For project-cycle work: do not conclude 'no change is possible' unless you inspected at least ${minConcreteTargets} distinct concrete implementation targets and name them in final_text.`);
     }
 
@@ -244,7 +431,7 @@ export function createObserverWorkerPrompting(context = {}) {
       lines.push("Your final_text should be a short execution report: what you inspected, what you changed or verified, and which files were involved.");
       lines.push("Inspection by itself is not a completed outcome. If you only inspected files so far, keep working instead of finishing.");
       lines.push("If you conclude no change is possible, use that exact phrase and name the concrete files or directories you inspected.");
-      lines.push("For code work, prefer shell_command for inspection and validation, use edit_file for surgical text changes, use write_file for new files or full rewrites, and use move_path for safe renames.");
+      lines.push("For code work, use the available inspection and validation tools when present, prefer surgical edit tools for targeted text changes, file-writing tools for new files or full rewrites, and move/rename tools only when they are available and the task asks for that.");
       lines.push("If the task names both source and destination paths, do not keep repeating the same source read plus destination write bundle after a successful read. Use the read result to write real content or inspect a different named source.");
     } else if ((looksCodeHeavy || kind === "worker") && specialty !== "creative") {
       lines.push("You are operating as an execution worker, not an intake planner.");
@@ -253,7 +440,7 @@ export function createObserverWorkerPrompting(context = {}) {
       lines.push("When you need tools, return 1 to 3 tool calls only. Do not dump a long project analysis into assistant_message.");
       lines.push("Do not finish successfully unless you either changed files, produced a concrete artifact, or verified a no-change conclusion after real inspection.");
       lines.push("If you conclude no change is possible, use that exact phrase and name the concrete files or areas you inspected before concluding that.");
-      lines.push("For code work, shell_command is the normal way to inspect and validate repo files. Prefer edit_file for targeted mutations, write_file for whole-file writes, and move_path for renames.");
+      lines.push("For code work, use the available validation tool when present. Prefer surgical edit tools for targeted mutations, file-writing tools for whole-file writes, and move/rename tools only when available and needed.");
       lines.push("If the task names both source and destination paths, do not repeat the same source read plus destination write bundle once the source has already been read successfully.");
     }
 
@@ -373,6 +560,8 @@ export function createObserverWorkerPrompting(context = {}) {
     }
 
     const intakeTools = [...INTAKE_TOOLS, ...getPluginToolsByScope("intake")];
+    const intakeToolNames = new Set(intakeTools.map((tool) => String(tool?.name || "").trim()).filter(Boolean));
+    const profilePromptLines = buildProfilePromptLines();
 
     // Allow plugins to inject context lines into the intake system prompt (e.g. persona, principles)
     const intakeHookResult = await runPluginHook("intake:prompt:build", {
@@ -405,9 +594,7 @@ export function createObserverWorkerPrompting(context = {}) {
       "Reply with JSON only.",
       "Available intake tools:",
       ...intakeTools.map((tool) => `- ${tool.name}: ${tool.description}`),
-      "If you need a light observer tool, return {\"assistant_message\":\"...\",\"tool_calls\":[...],\"tasks\":[],\"action\":\"reply_only|enqueue\",\"reason\":\"...\",\"final\":false}.",
-      "Each tool call must look like {\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"tool_name\",\"arguments\":\"{\\\"key\\\":\\\"value\\\"}\"}}.",
-      "When finished, return {\"assistant_message\":\"...\",\"final_text\":\"...\",\"tool_calls\":[],\"tasks\":[...],\"action\":\"reply_only|enqueue|clarify\",\"reason\":\"...\",\"final\":true}.",
+      ...buildToolEnvelopeContractLines({ mode: "intake", toolNames: intakeToolNames }),
       "Task schema: {\"message\":\"string\",\"every\":\"optional cadence like 15m|2h|1d\",\"delay\":\"optional delay like 5m\"}",
       "If action is reply_only, tasks must be an empty array.",
       "Only set every or delay when the user explicitly requested recurring or delayed execution.",
@@ -420,6 +607,7 @@ export function createObserverWorkerPrompting(context = {}) {
       memoryGuidance,
       skillsGuidance,
       agentSkillsGuidance,
+      ...profilePromptLines,
       ...contextLines,
       ...intakeInjectedLines
     ].filter(Boolean).join("\n");
@@ -440,17 +628,24 @@ export function createObserverWorkerPrompting(context = {}) {
   } = {}) {
     const observerConfig = getObserverConfig();
     const allowedMounts = observerConfig.mounts.filter((mount) => selectedMountIds.includes(mount.id));
+    const normalizedInternalJobType = String(internalJobType || "").trim();
+    const focusedUserRequest = buildFocusedWorkerUserRequest({
+      message,
+      preset,
+      internalJobType: normalizedInternalJobType,
+      runtimeNotesExtra
+    });
     const memoryGuidance = buildPromptMemoryGuidanceNote();
     const skillsGuidance = await buildInstalledSkillsGuidanceNote();
     const agentSkillsGuidance = typeof buildAgentSkillsGuidanceNote === "function" ? await buildAgentSkillsGuidanceNote() : "";
-    const normalizedInternalJobType = String(internalJobType || "").trim();
-    const loopLessons = await readLoopLessonsNote(message);
+    const loopLessons = await readLoopLessonsNote(focusedUserRequest || message);
     const taskSpecialty = inferTaskSpecialty({
       message,
       notes: Array.isArray(runtimeNotesExtra) ? runtimeNotesExtra.join("\n") : "",
       internalJobType: normalizedInternalJobType
     });
-    const workerSpecialtyLines = buildWorkerSpecialtyPromptLines({ brain, message, forceToolUse, preset, taskSpecialty, internalJobType: normalizedInternalJobType });
+    const workerSpecialtyLines = buildWorkerSpecialtyPromptLines({ brain, message: focusedUserRequest || message, forceToolUse, preset, taskSpecialty, internalJobType: normalizedInternalJobType });
+    const profilePromptLines = buildProfilePromptLines();
     const projectCycleMessage = normalizedInternalJobType === "project_cycle"
       || (!normalizedInternalJobType && typeof isProjectCycleMessage === "function" && isProjectCycleMessage(message));
     // For project-cycle tasks with long messages, prepend a focused context note
@@ -459,18 +654,18 @@ export function createObserverWorkerPrompting(context = {}) {
     const isResearchTask = taskSpecialty === "retrieval" || (normalizedInternalJobType === "project_cycle" && /\b(research|evidence|synthesis|literature|sources?|references?|study|studies|paper|papers|journal|findings?)\b/i.test(message));
     if (isResearchTask) {
       try {
-        const searchQuery = message.slice(0, 300).replace(/\s+/g, " ").trim();
+        const searchQuery = (focusedUserRequest || message).slice(0, 300).replace(/\s+/g, " ").trim();
         const chunks = await buildDocumentSearchSummary(searchQuery);
         if (Array.isArray(chunks) && chunks.length > 1) {
-          effectiveRuntimeNotes.unshift(`Indexed workspace context for this task:\n${chunks.join("\n")}`);
+          effectiveRuntimeNotes.unshift(`Indexed workspace context for this task:\n${chunks.slice(0, 4).map((chunk) => compactLine(chunk, 360)).join("\n")}`);
         }
       } catch {
         // non-fatal
       }
     }
-    if (projectCycleMessage && String(message).length > 800 && typeof extractTaskDirectiveValue === "function") {
-      const objectiveText = extractTaskDirectiveValue(message, "Objective:") || "";
-      const inspectFirstText = extractTaskDirectiveValue(message, "Inspect first:") || "";
+    if (projectCycleMessage && String(message).length > 800) {
+      const objectiveText = extractDirectiveValue(extractTaskDirectiveValue, message, "Objective:") || "";
+      const inspectFirstText = extractDirectiveValue(extractTaskDirectiveValue, message, "Inspect first:") || "";
       if (objectiveText || inspectFirstText) {
         const focusNote = [
           "Key task focus:",
@@ -480,18 +675,25 @@ export function createObserverWorkerPrompting(context = {}) {
         effectiveRuntimeNotes.unshift(focusNote);
       }
     }
+    const cappedRuntimeNotes = effectiveRuntimeNotes
+      .map((note) => compactLine(note, projectCycleMessage ? 500 : 900))
+      .filter(Boolean)
+      .slice(0, projectCycleMessage ? 5 : 10);
 
-    // Select minimal tool set when the task signals are specific enough
-    const pluginTools = getPluginToolsByScope("worker");
-    const toolSelection = typeof selectToolsForTask === "function"
-      ? selectToolsForTask(message, normalizedInternalJobType, WORKER_TOOLS, pluginTools)
-      : { tools: WORKER_TOOLS, pluginTools, confident: false };
-    const effectiveWorkerTools = toolSelection.tools;
-    const effectivePluginTools = toolSelection.pluginTools;
-    const effectiveToolNames = new Set([
-      ...effectiveWorkerTools,
-      ...effectivePluginTools
-    ].map((tool) => String(tool?.name || "").trim()).filter(Boolean));
+    // Select minimal tool set when the task signals are specific enough.
+    const {
+      toolSelection,
+      effectiveWorkerTools,
+      effectivePluginTools,
+      effectiveToolNames
+    } = buildWorkerToolAccess({
+      message,
+      preset,
+      internalJobType: normalizedInternalJobType,
+      runtimeNotesExtra
+    });
+    const visiblePathTools = ["edit_file", "write_file", "read_document", "read_file", "list_files"]
+      .filter((name) => effectiveToolNames.has(name));
 
     const coreLines = [
       `You are the ${brain.label}.`,
@@ -519,26 +721,48 @@ export function createObserverWorkerPrompting(context = {}) {
       ...effectiveWorkerTools.map((tool) => `- ${tool.name}: ${tool.description}`),
       ...effectivePluginTools.map((tool) => `- ${tool.name}: ${tool.description}`),
       "Respond with JSON only.",
-      "If you need tools, return {\"assistant_message\":\"...\",\"tool_calls\":[...],\"final\":false}.",
-      "Each tool call must look like {\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"tool_name\",\"arguments\":\"{\\\"key\\\":\\\"value\\\"}\"}}.",
+      ...buildToolEnvelopeContractLines({ mode: "worker", toolNames: effectiveToolNames, includeFinalReminder: false }),
       effectiveToolNames.has("edit_file")
         ? "For edit_file, use arguments like {\"path\":\"...\",\"oldText\":\"...\",\"newText\":\"...\"}, {\"path\":\"...\",\"edits\":[{\"oldText\":\"...\",\"newText\":\"...\"}]}, or {\"path\":\"...\",\"content\":\"full file text\"} when replacing the whole file."
         : "",
-      ["edit_file", "write_file", "read_document", "list_files"].some((name) => effectiveToolNames.has(name))
-        ? "Do not leave out the path field on edit_file, write_file, read_document, or list_files. Repeat the explicit full path every time you call one of those tools."
+      visiblePathTools.length
+        ? `Do not leave out the path field on ${visiblePathTools.join(", ")}. Repeat the explicit full path every time you call one of those tools.`
         : "",
       effectiveToolNames.has("edit_file") && effectiveToolNames.has("write_file")
         ? "When the task says to keep the rest of a file unchanged or edit in place, prefer edit_file and avoid write_file unless you intentionally provide the full preserved file content."
         : "",
-      "If the task is complete, return {\"assistant_message\":\"...\",\"final_text\":\"...\",\"tool_calls\":[],\"final\":true}.",
+      "When finished, return a final envelope with assistant_message, final_text, tool_calls:[], and final:true.",
       "Never return role=tool or tool_results as the top-level response. Tool results are supplied by Observer, not by you.",
       "Do not return final=true after analysis alone. Final=true is only for a concrete change, a concrete artifact, or the exact no-change conclusion with inspected paths.",
       ...workerSpecialtyLines,
       loopLessons,
       memoryGuidance,
       skillsGuidance,
-      agentSkillsGuidance
-    ].concat(effectiveRuntimeNotes).filter(Boolean);
+      agentSkillsGuidance,
+      ...profilePromptLines
+    ].concat(cappedRuntimeNotes).filter(Boolean);
+
+    if (taskId) {
+      appendHookTrace(taskId, {
+        hook: "worker:prompt:context",
+        pluginId: "observer-core",
+        effect: `focused request ${String(focusedUserRequest || "").length}/${String(message || "").length} chars; ${effectiveToolNames.size} tool(s) exposed`,
+        payloadPreview: JSON.stringify({
+          originalMessageChars: String(message || "").length,
+          focusedMessageChars: String(focusedUserRequest || "").length,
+          runtimeNotesProvided: Array.isArray(runtimeNotesExtra) ? runtimeNotesExtra.length : 0,
+          runtimeNotesInjected: cappedRuntimeNotes.length,
+          toolSelectionConfident: toolSelection.confident === true,
+          toolSelectionReason: String(toolSelection.reason || "").trim(),
+          matchedToolFamilies: Array.isArray(toolSelection.matchedFamilies) ? toolSelection.matchedFamilies : [],
+          optionalToolFamiliesMatched: Number(toolSelection.optionalFamiliesMatched || 0),
+          totalOptionalToolFamilies: Number(toolSelection.totalOptionalFamilies || 0),
+          workerTools: effectiveWorkerTools.map((tool) => tool.name),
+          pluginTools: effectivePluginTools.map((tool) => tool.name),
+          focusedPreview: compactLine(focusedUserRequest || "", 500)
+        })
+      }).catch(() => {});
+    }
 
     // Allow plugins to inject lines into the worker system prompt (e.g. autoplan principles)
     const hookResult = await runPluginHook("worker:prompt:build", {
@@ -557,7 +781,12 @@ export function createObserverWorkerPrompting(context = {}) {
       }).catch(() => {});
     }
 
-    return [...coreLines, ...injectedLines].join("\n");
+    const finalContractReminder = [
+      "Final response contract reminder:",
+      ...buildToolEnvelopeContractLines({ mode: "worker", toolNames: effectiveToolNames })
+    ];
+
+    return [...coreLines, ...injectedLines, ...finalContractReminder].join("\n");
   }
 
   function buildPromptReviewSampleMessage(brain = {}) {
@@ -657,6 +886,8 @@ export function createObserverWorkerPrompting(context = {}) {
 
   return {
     buildIntakeSystemPrompt,
+    buildFocusedWorkerUserRequest,
+    buildWorkerToolAccess,
     buildPromptReviewSampleMessage,
     buildWorkerSpecialtyPromptLines,
     buildWorkerSystemPrompt,

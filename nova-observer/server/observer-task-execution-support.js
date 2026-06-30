@@ -988,17 +988,31 @@ async function buildCompletionReviewSummary({ task, runResponse, workerSummary, 
     // Always-on core: basic file ops used by virtually every task
     {
       id: "core",
-      names: ["list_files", "read_file", "read_document", "edit_file", "write_file", "move_path"],
+      names: ["list_files", "read_file", "read_document", "edit_file", "write_file"],
       always: true,
       match: () => true
+    },
+    // Always-on recovery: any focused task can discover that the current toolbelt is insufficient.
+    {
+      id: "recovery",
+      names: ["search_skill_library", "inspect_skill_library", "request_skill_installation", "request_tool_addition"],
+      always: true,
+      match: () => true
+    },
+    // Path moves are uncommon and risky enough to expose only when requested.
+    {
+      id: "move",
+      names: ["move_path"],
+      always: false,
+      match: (lower) => /\b(move|rename|relocate|reorganize|reorganise)\b/.test(lower)
     },
     // Shell / code validation
     {
       id: "shell",
       names: ["shell_command"],
       always: false,
-      match: (lower) => /\b(shell|command|run|script|test|build|deploy|validate|compile|npm|node|python|bash|cli|check|verify|pytest|make)\b/.test(lower)
-        || /\b(code|implement|refactor|debug|bug|fix|patch|repo|repository)\b/.test(lower)
+      match: (lower) => /\b(shell|command|run|script|test|tests|build|deploy|compile|npm|node|python|bash|cli|pytest|make)\b/.test(lower)
+        || /\b(code|implement|implementation|refactor|debug|bug|fix|patch|repo|repository)\b/.test(lower)
     },
     // Web fetching
     {
@@ -1074,19 +1088,27 @@ async function buildCompletionReviewSummary({ task, runResponse, workerSummary, 
       return {
         tools: workerTools.filter((tool) => allowed.has(String(tool?.name || "").trim())),
         pluginTools: [],
-        confident: true
+        confident: true,
+        reason: "specialized_job_type",
+        matchedFamilies: ["agent_recreation"],
+        optionalFamiliesMatched: 1,
+        totalOptionalFamilies: TOOL_FAMILIES.filter((f) => !f.always).length
       };
     }
 
     // Build the included tool name set from matching families
     const included = new Set();
+    const matchedFamilies = [];
     let optionalFamiliesMatched = 0;
     const totalOptionalFamilies = TOOL_FAMILIES.filter((f) => !f.always).length;
 
     for (const family of TOOL_FAMILIES) {
       if (family.always || family.match(lower) || family.matchJobType?.(jobType)) {
         for (const name of family.names) included.add(name);
-        if (!family.always) optionalFamiliesMatched++;
+        if (!family.always) {
+          optionalFamiliesMatched++;
+          matchedFamilies.push(String(family.id || "").trim());
+        }
       }
     }
 
@@ -1095,7 +1117,15 @@ async function buildCompletionReviewSummary({ task, runResponse, workerSummary, 
     const confident = optionalFamiliesMatched <= Math.max(1, Math.floor(totalOptionalFamilies / 2));
 
     if (!confident) {
-      return { tools: workerTools, pluginTools, confident: false };
+      return {
+        tools: workerTools,
+        pluginTools,
+        confident: false,
+        reason: "too_many_tool_families_matched",
+        matchedFamilies: matchedFamilies.filter(Boolean),
+        optionalFamiliesMatched,
+        totalOptionalFamilies
+      };
     }
 
     // Filter worker tools to those in the included set, preserving original order
@@ -1115,7 +1145,15 @@ async function buildCompletionReviewSummary({ task, runResponse, workerSummary, 
       return false;
     });
 
-    return { tools: filteredWorkerTools, pluginTools: filteredPluginTools, confident: true };
+    return {
+      tools: filteredWorkerTools,
+      pluginTools: filteredPluginTools,
+      confident: true,
+      reason: "focused_family_match",
+      matchedFamilies: matchedFamilies.filter(Boolean),
+      optionalFamiliesMatched,
+      totalOptionalFamilies
+    };
   }
 
   return {

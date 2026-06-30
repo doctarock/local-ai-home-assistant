@@ -1,0 +1,23 @@
+{
+  "id": "default",
+  "name": "Default Observer Mode",
+  "description": "Default Observer profile",
+  "enabledPlugins": [],
+  "disabledPlugins": [],
+  "forceEnabledPlugins": [],
+  "hiddenPlugins": [],
+  "defaultBrain": "business-operator",
+  "systemPromptAddons": [],
+  "tools": {
+    "allow": [],
+    "deny": []
+  },
+  "ui": {
+    "title": "Observer",
+    "hiddenTabs": [],
+    "defaultTab": "queue"
+  },
+  "runtime": {
+    "allowGeneralAssistant": true
+  }
+}

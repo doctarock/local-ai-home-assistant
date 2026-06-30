@@ -253,6 +253,53 @@ export function createObserverTaskStorage(options = {}) {
 
       const attemptCount = Number(task.dispatchCount || 0);
       if (attemptCount >= 2) {
+        const attemptedBrainIds = new Set((Array.isArray(task.specialistAttemptedBrainIds) ? task.specialistAttemptedBrainIds : [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean));
+        attemptedBrainIds.add(String(task.requestedBrainId || "worker").trim() || "worker");
+        const fallbackBrainId = Array.isArray(task.specialistRoute?.fallbackBrainIds)
+          ? task.specialistRoute.fallbackBrainIds
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+            .find((id) => !attemptedBrainIds.has(id))
+          : "";
+        if (fallbackBrainId) {
+          const fallbackBrain = await getBrain(fallbackBrainId);
+          const fallbackLane = String(getBrainQueueLane(fallbackBrain) || "").trim();
+          const recoveryNote = compactTaskText(
+            `Recovered stalled task after ${attemptCount} attempts and routed it to fallback specialist ${fallbackBrainId}.`,
+            260
+          );
+          const recoveredTask = await persistTaskTransition({
+            previousTask: task,
+            nextTask: {
+              ...task,
+              status: "queued",
+              requestedBrainId: fallbackBrainId,
+              queueLane: fallbackLane,
+              updatedAt: now,
+              startedAt: 0,
+              lastHeartbeatAt: 0,
+              notBeforeAt: now,
+              recoveredAt: now,
+              stalledAt: lastTouchedAt,
+              dispatchCount: 0,
+              resourceBusyRetryCount: 0,
+              notes: recoveryNote,
+              specialistAttemptedBrainIds: [...attemptedBrainIds],
+              recoveryTrail: [
+                ...(Array.isArray(task.recoveryTrail) ? task.recoveryTrail : []),
+                { at: now, from: "in_progress", to: "queued", reason: "stale_in_progress_fallback", fallbackBrainId }
+              ]
+            },
+            eventType: "task.recovered",
+            reason: recoveryNote
+          });
+          broadcastObserverEvent({ type: "task.recovered", task: { ...recoveredTask, recovered: true } });
+          recovered.push(recoveredTask);
+          continue;
+        }
+
         const failedTask = await persistTaskTransition({
           previousTask: task,
           nextTask: {

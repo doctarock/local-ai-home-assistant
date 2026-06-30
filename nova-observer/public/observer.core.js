@@ -120,6 +120,11 @@ const installedSkillsListEl = document.getElementById("installedSkillsList");
 const agentSkillsListEl = document.getElementById("agentSkillsList");
 const capabilityRequestsListEl = document.getElementById("capabilityRequestsList");
 const pluginInventoryListEl = document.getElementById("pluginInventoryList");
+const profileSelectionSelectEl = document.getElementById("profileSelectionSelect");
+const saveProfileSelectionBtn = document.getElementById("saveProfileSelectionBtn");
+const saveProfileRestartBtn = document.getElementById("saveProfileRestartBtn");
+const profileSelectionStatusEl = document.getElementById("profileSelectionStatus");
+const profileSelectionDetailsEl = document.getElementById("profileSelectionDetails");
 const pluginUploadInputEl = document.getElementById("pluginUploadInput");
 const pluginUploadAutoRestartEl = document.getElementById("pluginUploadAutoRestart");
 const installPluginUploadBtn = document.getElementById("installPluginUploadBtn");
@@ -219,6 +224,8 @@ let voiceMicSetupPromise = null;
 let voiceFingerprintFrames = [];
 let latestVoiceFingerprint = [];
 let latestVoiceSourceIdentity = null;
+let trustedVoiceGraceIdentity = null;
+let trustedVoiceGraceUntil = 0;
 let voiceCaptureSession = null;
 let voiceCommandCaptureStartedAt = 0;
 let voiceTranscriptSegmentStartedAt = 0;
@@ -252,6 +259,10 @@ let activeCapabilitiesSubtabId = "capabilitiesToolsPanel";
 const seenTaskEventKeys = new Set();
 const announcedTaskHeartbeatTs = new Map();
 let runtimeOptions = { app: { botName: "Agent", avatarModelPath: "/assets/characters/Nova.glb", backgroundImagePath: "", stylizationFilterPreset: "none", stylizationEffectPreset: "none", roomTextures: {}, propSlots: {}, voicePreferences: [], trust: { emailCommandMinLevel: "trusted", voiceCommandMinLevel: "trusted", records: [], emailSources: [], voiceProfiles: [], phoneSources: [] } }, language: {}, lexicon: {}, defaults: { internetEnabled: true, mountIds: [] }, mounts: [], networks: {}, brains: [] };
+let uiSecuritySession = { lockEnabled: false, unlocked: true, inactivityMs: 30 * 60 * 1000, voiceProfileCount: 0 };
+let uiSecurityLastActivityAt = Date.now();
+let uiSecurityRelockTimer = null;
+const uiSecurityClientSessionId = `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 const SETTINGS_KEY = "novaObserverAccess";
 const CRON_CURSOR_KEY = "novaObserverLatestCronEventTs";
 const TASK_CURSOR_KEY = "novaObserverLatestTaskEventTs";
@@ -355,7 +366,12 @@ function escapeRegExp(value) {
 }
 
 function getWakePhrase() {
-  return getBotName().toLowerCase();
+  const identityName = String(runtimeOptions?.app?.identityName || "").trim();
+  return (identityName || getBotName()).toLowerCase();
+}
+
+function getWakeDisplayName() {
+  return String(runtimeOptions?.app?.identityName || "").trim() || getBotName();
 }
 
 function getStopPhrase() {
@@ -366,6 +382,14 @@ function getStopPhraseVariants() {
   return [...new Set([
     normalizeVoiceText(getStopPhrase())
   ].filter(Boolean))];
+}
+
+function getUnlockPhrase() {
+  return `hello ${getWakeDisplayName()}`;
+}
+
+function getLockPhrase() {
+  return `goodbye ${getWakeDisplayName()}`;
 }
 
 function setVoiceStatus(html) {
@@ -438,6 +462,377 @@ function saveEventCursor(key, value) {
 latestCronEventTs = loadEventCursor(CRON_CURSOR_KEY);
 latestTaskEventTs = loadEventCursor(TASK_CURSOR_KEY);
 
+const CORE_VOICE_NAVIGATION_SCROLL_AMOUNT = 520;
+
+function coreVoiceEscapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function normalizeVoiceNavigationLabel(value) {
+  return normalizeVoiceText(value)
+    .replace(/\b(the ui|ui|interface|observer ui|observer interface)\b/g, " ")
+    .replace(/\b(sub tabs|sub tab|subtabs|subtab|tabs|tab|panel|section|page|view)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeCoreVoiceNavigationCommandText(value) {
+  let normalized = normalizeVoiceText(value);
+  for (let depth = 0; depth < 3; depth += 1) {
+    const next = normalized
+      .replace(/^(?:please|hey|ok|okay|alright)\s+/, "")
+      .replace(/^(?:nova|agent)\s+/, "")
+      .replace(/^(?:can you|could you|would you|will you|please can you|please could you)\s+/, "")
+      .replace(/^(?:i need you to|i want you to|would you please|can we|let us|let's)\s+/, "")
+      .trim();
+    if (next === normalized) {
+      break;
+    }
+    normalized = next;
+  }
+  normalized = normalized
+    .replace(/^(show|open|go|navigate|switch|change|select|activate|move)\s+me\s+(?:to\s+)?/, "$1 ")
+    .replace(/^(navigate|go|move|switch|change|open|show|select|activate)\s+(?:the\s+)?(?:observer\s+)?(?:ui|interface)\s+(?:to\s+)?/, "$1 ")
+    .replace(/^(take me)\s+(?:to\s+)?(?:the\s+)?(?:observer\s+)?(?:ui|interface)\s+(?:to\s+)?/, "$1 to ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized;
+}
+
+function getElementVoiceLabel(element) {
+  if (!(element instanceof HTMLElement)) {
+    return "";
+  }
+  return [
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.textContent,
+    element.id,
+    element.dataset?.tabTarget,
+    element.dataset?.novaSubtabTarget,
+    element.dataset?.brainSubtabTarget,
+    element.dataset?.secretsSubtabTarget,
+    element.dataset?.pluginsSubtabTarget,
+    element.dataset?.capabilitiesSubtabTarget,
+    element.dataset?.systemSubtabTarget,
+    element.dataset?.queueSubtabTarget
+  ].map((entry) => String(entry || "").trim()).filter(Boolean).join(" ");
+}
+
+function scoreVoiceNavigationMatch(element, requestedLabel = "") {
+  const requested = normalizeVoiceNavigationLabel(requestedLabel);
+  const label = normalizeVoiceNavigationLabel(getElementVoiceLabel(element));
+  if (!requested || !label) {
+    return 0;
+  }
+  if (label === requested) {
+    return 100;
+  }
+  if (label.includes(requested)) {
+    return 80;
+  }
+  if (requested.includes(label)) {
+    return 70;
+  }
+  const requestedWords = requested.split(" ").filter(Boolean);
+  const labelWords = new Set(label.split(" ").filter(Boolean));
+  const matched = requestedWords.filter((word) => {
+    if (labelWords.has(word)) {
+      return true;
+    }
+    if (word.endsWith("s") && labelWords.has(word.slice(0, -1))) {
+      return true;
+    }
+    return labelWords.has(`${word}s`);
+  }).length;
+  return matched ? matched * 12 : 0;
+}
+
+function findBestVoiceNavigationTarget(elements = [], requestedLabel = "") {
+  return elements
+    .map((element) => ({ element, score: scoreVoiceNavigationMatch(element, requestedLabel) }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)[0]?.element || null;
+}
+
+function getActiveObserverTabPanel() {
+  return document.querySelector(".tab-panel.active") || document.querySelector(".tab-panel");
+}
+
+function getActiveObserverPanel() {
+  const activeTab = getActiveObserverTabPanel();
+  if (!activeTab) {
+    return panelDrawerEl || document.body;
+  }
+  const activeNested = activeTab.querySelector([
+    ".nova-subtab-panel.active",
+    ".brain-subtab-panel.active",
+    ".secrets-subtab-panel.active",
+    ".plugins-subtab-panel.active",
+    ".capabilities-subtab-panel.active",
+    ".system-subtab-panel.active",
+    ".queue-panel.active"
+  ].join(", "));
+  return activeNested || activeTab;
+}
+
+function getScrollableObserverPanelElement() {
+  const candidates = [
+    getActiveObserverPanel(),
+    panelDrawerEl?.querySelector(".drawer-content"),
+    panelDrawerEl,
+    document.scrollingElement,
+    document.documentElement
+  ].filter(Boolean);
+  return candidates.find((element) => Number(element.scrollHeight || 0) > Number(element.clientHeight || 0) + 8) || document.scrollingElement || document.documentElement;
+}
+
+function getActiveObserverPanelSnapshot({ maxChars = 3600 } = {}) {
+  const panel = getActiveObserverPanel();
+  const tabButton = document.querySelector("[data-tab-target].active");
+  const subtabButton = panelDrawerEl?.querySelector([
+    "[data-nova-subtab-target].active",
+    "[data-brain-subtab-target].active",
+    "[data-secrets-subtab-target].active",
+    "[data-plugins-subtab-target].active",
+    "[data-capabilities-subtab-target].active",
+    "[data-system-subtab-target].active",
+    "[data-queue-subtab-target].active"
+  ].join(", "));
+  const heading = [tabButton, subtabButton]
+    .map((element) => String(element?.textContent || element?.getAttribute?.("aria-label") || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" / ") || "Current panel";
+  const text = String(panel?.innerText || panel?.textContent || "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return {
+    heading,
+    text: text.length > maxChars ? `${text.slice(0, maxChars).trim()}\n\n[panel text truncated]` : text
+  };
+}
+
+function speakCoreVoiceNavigationText(text = "") {
+  const message = String(text || "").trim();
+  if (!message) {
+    return;
+  }
+  if (typeof observerApp.presentPayloadSpeech === "function") {
+    observerApp.presentPayloadSpeech(message);
+    return;
+  }
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(message));
+  }
+}
+
+function acknowledgeCoreVoiceNavigation(message = "") {
+  const text = String(message || "").trim();
+  if (!text) {
+    return;
+  }
+  setVoiceStatus(coreVoiceEscapeHtml(text));
+  setVoiceMeta("Core voice navigation handled the command.");
+  observerApp.noteUiSecurityActivity?.();
+  if (typeof observerApp.enqueueUpdate === "function") {
+    observerApp.enqueueUpdate({
+      source: "voice",
+      title: "Voice navigation",
+      displayText: text,
+      spokenText: text,
+      rawText: text,
+      status: "ok",
+      brainLabel: "Observer",
+      model: "core"
+    }, { priority: true });
+  } else {
+    speakCoreVoiceNavigationText(text);
+  }
+}
+
+function activateVoiceNavigationSubtab(button) {
+  if (!(button instanceof HTMLElement)) {
+    return false;
+  }
+  if (button.dataset.novaSubtabTarget && typeof observerApp.activateNovaSubtab === "function") {
+    observerApp.activateNovaSubtab(button.dataset.novaSubtabTarget);
+  } else if (button.dataset.brainSubtabTarget && typeof observerApp.activateBrainSubtab === "function") {
+    observerApp.activateBrainSubtab(button.dataset.brainSubtabTarget);
+  } else if (button.dataset.secretsSubtabTarget && typeof observerApp.activateSecretsSubtab === "function") {
+    observerApp.activateSecretsSubtab(button.dataset.secretsSubtabTarget);
+  } else if (button.dataset.pluginsSubtabTarget && typeof observerApp.activatePluginsSubtab === "function") {
+    observerApp.activatePluginsSubtab(button.dataset.pluginsSubtabTarget);
+  } else if (button.dataset.capabilitiesSubtabTarget && typeof observerApp.activateCapabilitiesSubtab === "function") {
+    observerApp.activateCapabilitiesSubtab(button.dataset.capabilitiesSubtabTarget);
+  } else if (button.dataset.systemSubtabTarget && typeof observerApp.activateSystemSubtab === "function") {
+    observerApp.activateSystemSubtab(button.dataset.systemSubtabTarget);
+  } else if (button.dataset.queueSubtabTarget && typeof observerApp.activateQueueSubtab === "function") {
+    observerApp.activateQueueSubtab(button.dataset.queueSubtabTarget);
+  } else {
+    button.click();
+  }
+  return true;
+}
+
+function getVoiceNavigationSubtabButtons(root = null) {
+  return Array.from((root || getActiveObserverTabPanel() || panelDrawerEl || document).querySelectorAll([
+    "[data-nova-subtab-target]",
+    "[data-brain-subtab-target]",
+    "[data-secrets-subtab-target]",
+    "[data-plugins-subtab-target]",
+    "[data-capabilities-subtab-target]",
+    "[data-system-subtab-target]",
+    "[data-queue-subtab-target]"
+  ].join(", ")));
+}
+
+function handleCoreVoiceNavigationTabCommand(text = "") {
+  const normalized = normalizeCoreVoiceNavigationCommandText(text);
+  const tabMatch = normalized.match(/^(?:go to|go|open|show|switch to|switch|change to|change|change tabs? to|select|activate|navigate to|navigate|take me to|move to|move)\s+(.+?)(?:\s+tab|\s+panel|\s+section|\s+view)?$/);
+  const requested = String(tabMatch ? tabMatch[1] : normalized)
+    .replace(/^(?:to|me|the|a|an)\s+/, "")
+    .replace(/^(?:me\s+)?(?:to\s+)?(?:the\s+)?/, "")
+    .replace(/^(?:observer\s+)?(?:ui|interface)\s+(?:to\s+)?/, "")
+    .trim();
+  const topTabButton = findBestVoiceNavigationTarget(Array.from(document.querySelectorAll("[data-tab-target]")), requested);
+  if (topTabButton?.dataset?.tabTarget) {
+    observerApp.activateTab?.(topTabButton.dataset.tabTarget);
+    const label = String(topTabButton.getAttribute("aria-label") || topTabButton.textContent || requested).trim();
+    const subtabButton = findBestVoiceNavigationTarget(getVoiceNavigationSubtabButtons(getActiveObserverTabPanel()), requested);
+    if (subtabButton && activateVoiceNavigationSubtab(subtabButton)) {
+      const subtabLabel = String(subtabButton.textContent || "").replace(/\s+/g, " ").trim();
+      acknowledgeCoreVoiceNavigation(`Opened ${label}${subtabLabel ? ` / ${subtabLabel}` : ""}.`);
+      return { handled: true, text };
+    }
+    acknowledgeCoreVoiceNavigation(`Opened ${label}.`);
+    return { handled: true, text };
+  }
+  const subtabButton = findBestVoiceNavigationTarget(getVoiceNavigationSubtabButtons(), requested);
+  if (subtabButton && activateVoiceNavigationSubtab(subtabButton)) {
+    const label = String(subtabButton.textContent || requested).replace(/\s+/g, " ").trim();
+    acknowledgeCoreVoiceNavigation(`Opened ${label}.`);
+    return { handled: true, text };
+  }
+  return null;
+}
+
+function handleCoreVoiceNavigationScrollCommand(text = "") {
+  const normalized = normalizeCoreVoiceNavigationCommandText(text);
+  let top = null;
+  if (/^(?:scroll|move|page)\s+(?:down|lower)$/.test(normalized) || /^down$/.test(normalized)) {
+    top = CORE_VOICE_NAVIGATION_SCROLL_AMOUNT;
+  } else if (/^(?:scroll|move|page)\s+(?:up|higher)$/.test(normalized) || /^up$/.test(normalized)) {
+    top = -CORE_VOICE_NAVIGATION_SCROLL_AMOUNT;
+  } else if (/^(?:scroll|go|jump)\s+to\s+(?:the\s+)?top$/.test(normalized)) {
+    const scroller = getScrollableObserverPanelElement();
+    scroller.scrollTo({ top: 0, behavior: "smooth" });
+    acknowledgeCoreVoiceNavigation("Scrolled to the top.");
+    return { handled: true, text };
+  } else if (/^(?:scroll|go|jump)\s+to\s+(?:the\s+)?bottom$/.test(normalized)) {
+    const scroller = getScrollableObserverPanelElement();
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    acknowledgeCoreVoiceNavigation("Scrolled to the bottom.");
+    return { handled: true, text };
+  }
+  if (top == null) {
+    return null;
+  }
+  getScrollableObserverPanelElement().scrollBy({ top, behavior: "smooth" });
+  acknowledgeCoreVoiceNavigation(top > 0 ? "Scrolled down." : "Scrolled up.");
+  return { handled: true, text };
+}
+
+function handleCoreVoiceNavigationPanelCommand(text = "") {
+  const normalized = normalizeCoreVoiceNavigationCommandText(text);
+  if (/^(?:full screen|fullscreen|expand|expand panel|expand to full screen|expand the panel|expand the panel to full screen|make(?: it)? full screen|make(?: the)? panel full screen)$/.test(normalized)) {
+    observerApp.setPanelOpen?.(true);
+    observerApp.setPanelFullscreen?.(true);
+    acknowledgeCoreVoiceNavigation("Panel expanded to full screen.");
+    return { handled: true, text };
+  }
+  if (/^(?:exit full screen|leave full screen|normal size|restore panel|shrink panel)$/.test(normalized)) {
+    observerApp.setPanelFullscreen?.(false);
+    acknowledgeCoreVoiceNavigation("Panel restored.");
+    return { handled: true, text };
+  }
+  if (/^(?:open|show)\s+(?:the\s+)?panel$/.test(normalized)) {
+    observerApp.setPanelOpen?.(true);
+    acknowledgeCoreVoiceNavigation("Panel opened.");
+    return { handled: true, text };
+  }
+  if (/^(?:close|hide)\s+(?:the\s+)?panel$/.test(normalized)) {
+    observerApp.setPanelOpen?.(false);
+    acknowledgeCoreVoiceNavigation("Panel hidden.");
+    return { handled: true, text };
+  }
+  return null;
+}
+
+function handleCoreVoiceNavigationReadCommand(text = "") {
+  const normalized = normalizeCoreVoiceNavigationCommandText(text);
+  if (!/^(?:read|summarize|tell me about)\s+(?:this\s+|the\s+|current\s+)?(?:panel|tab|screen|view|section|contents?)$/.test(normalized)) {
+    return null;
+  }
+  const snapshot = getActiveObserverPanelSnapshot({ maxChars: 1200 });
+  const spoken = snapshot.text
+    ? `${snapshot.heading}. ${snapshot.text.slice(0, 900)}`
+    : `${snapshot.heading}. There is no readable panel text right now.`;
+  acknowledgeCoreVoiceNavigation(`Reading ${snapshot.heading}.`);
+  speakCoreVoiceNavigationText(spoken);
+  return { handled: true, text };
+}
+
+function handleCoreVoiceNavigationAssessCommand(text = "") {
+  const normalized = normalizeCoreVoiceNavigationCommandText(text);
+  if (!/^(?:assess|analyze|review|inspect)\s+(?:this\s+|the\s+|current\s+)?(?:panel|tab|screen|view|section|contents?)$/.test(normalized)) {
+    return null;
+  }
+  const snapshot = getActiveObserverPanelSnapshot();
+  const prompt = [
+    `Assess the current Observer UI panel "${snapshot.heading}".`,
+    "Call out the important state, risks, likely next actions, and anything that looks stale or broken.",
+    "",
+    "Visible panel contents:",
+    snapshot.text || "(No readable panel text was available.)"
+  ].join("\n");
+  setVoiceStatus(`Assessing <strong>${coreVoiceEscapeHtml(snapshot.heading)}</strong>.`);
+  setVoiceMeta("Core voice navigation attached the visible panel contents to the request.");
+  return {
+    handled: false,
+    text: prompt,
+    metadata: {
+      voiceCommand: "assess_panel",
+      panelHeading: snapshot.heading
+    }
+  };
+}
+
+function handleCoreVoiceNavigationCommand(text = "") {
+  return handleCoreVoiceNavigationPanelCommand(text)
+    || handleCoreVoiceNavigationScrollCommand(text)
+    || handleCoreVoiceNavigationReadCommand(text)
+    || handleCoreVoiceNavigationAssessCommand(text)
+    || handleCoreVoiceNavigationTabCommand(text);
+}
+
+window.addEventListener("observer:voice:before-submit", (event) => {
+  const detail = event?.detail || {};
+  const text = String(detail.text || "").trim();
+  if (!text || typeof detail.respondWith !== "function") {
+    return;
+  }
+  const result = handleCoreVoiceNavigationCommand(text);
+  if (result) {
+    detail.respondWith(result);
+  }
+});
+
 Object.assign(observerApp, {
   getIntakeBrain,
   getBotName,
@@ -451,6 +846,8 @@ Object.assign(observerApp, {
   getWakePhrase,
   getStopPhrase,
   getStopPhraseVariants,
+  getUnlockPhrase,
+  getLockPhrase,
   setVoiceStatus,
   setVoiceMeta,
   normalizeVoiceText,
@@ -458,6 +855,8 @@ Object.assign(observerApp, {
   getTrustLevelRank,
   trustLevelLabel,
   isTrustLevelAtLeast,
+  handleCoreVoiceNavigationCommand,
+  getActiveObserverPanelSnapshot,
   loadEventCursor,
   saveEventCursor
 });

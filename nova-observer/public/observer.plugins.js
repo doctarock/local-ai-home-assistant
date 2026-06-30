@@ -19,6 +19,7 @@ function getSelectedMountIdsForPlugin() {
     : [];
 }
 let pluginCatalogDraft = null;
+let profileOptionsDraft = null;
 let pluginPermissionRulesDraft = null;
 let pluginTaskLifecycleLastTaskId = "";
 let pluginDynamicPanelDraftByKey = new Map();
@@ -29,6 +30,8 @@ let pluginTopLevelTabModuleByScript = new Map();
 let pluginNovaTabModuleByScript = new Map();
 let pluginSecretsTabModuleByScript = new Map();
 let pluginSystemTabModuleByScript = new Map();
+let pluginManagerLoadInFlight = null;
+let pluginManagerLastLoadFailed = false;
 
 async function getAdminUiToken(forceRefresh = false) {
   if (!forceRefresh && pluginAdminTokenCache) {
@@ -48,12 +51,17 @@ async function pluginAdminFetch(url = "", options = {}) {
   const token = await getAdminUiToken();
   const headers = {
     ...(options?.headers && typeof options.headers === "object" ? options.headers : {}),
-    "x-admin-token": token
+    "x-admin-token": token,
+    "x-observer-client-session": uiSecurityClientSessionId
   };
-  return fetch(url, {
+  const response = await fetch(url, {
     ...options,
     headers
   });
+  if (response.status === 423) {
+    await observerApp.syncUiSecuritySession?.({ silent: true }).catch(() => {});
+  }
+  return response;
 }
 
 function getInstalledPlugins() {
@@ -1286,11 +1294,138 @@ function setPluginControlsAvailability() {
   }
 }
 
+function renderProfileSwitcher() {
+  if (!profileSelectionSelectEl || !profileSelectionStatusEl || !profileSelectionDetailsEl) {
+    return;
+  }
+  const profiles = Array.isArray(profileOptionsDraft?.profiles) ? profileOptionsDraft.profiles : [];
+  const activeProfile = profileOptionsDraft?.profile || {};
+  const selection = profileOptionsDraft?.selection || {};
+  const restart = profileOptionsDraft?.restart || {};
+  const envOverride = profileOptionsDraft?.envOverride === true;
+  const pendingProfileId = String(selection.pendingProfileId || "").trim();
+  const activeProfileId = String(activeProfile.id || selection.selectedProfileId || "default").trim();
+  const selectedProfileId = pendingProfileId || activeProfileId;
+
+  profileSelectionSelectEl.innerHTML = profiles.length
+    ? profiles.map((profile) => `
+      <option value="${escapeAttr(profile.id)}" ${profile.id === selectedProfileId ? "selected" : ""}>${escapeHtml(profile.name || profile.id)}</option>
+    `).join("")
+    : `<option value="${escapeAttr(activeProfileId)}">${escapeHtml(activeProfile.name || activeProfileId)}</option>`;
+  profileSelectionSelectEl.disabled = envOverride;
+  if (saveProfileSelectionBtn) {
+    saveProfileSelectionBtn.disabled = envOverride || !profiles.length;
+  }
+  if (saveProfileRestartBtn) {
+    saveProfileRestartBtn.disabled = envOverride || !profiles.length || restart.supported !== true;
+    saveProfileRestartBtn.title = restart.supported === true
+      ? "Save the selected profile and restart Observer"
+      : "Auto-restart requires Observer to run under PM2 or another restart supervisor";
+  }
+
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || activeProfile;
+  const statusParts = [
+    `Active: ${activeProfile.name || activeProfileId}`,
+    pendingProfileId && pendingProfileId !== activeProfileId ? `pending restart: ${pendingProfileId}` : "",
+    envOverride ? "environment override active" : "",
+    restart.supported === true ? "auto-restart available" : "manual restart required"
+  ].filter(Boolean);
+  profileSelectionStatusEl.textContent = statusParts.join(" | ");
+  profileSelectionDetailsEl.innerHTML = `
+    <div class="brain-row">
+      <div class="brain-row-actions">
+        <span>
+          <strong>${escapeHtml(selectedProfile?.name || selectedProfileId || "Profile")}</strong>
+          <div class="micro">${escapeHtml(selectedProfile?.id || selectedProfileId || "")}</div>
+        </span>
+        <span class="brain-pill">${escapeHtml(selection.source || "startup")}</span>
+      </div>
+      <div class="micro">${escapeHtml(selectedProfile?.description || "No description.")}</div>
+      <div class="micro">${escapeHtml(`Default tab: ${selectedProfile?.ui?.defaultTab || "queue"} | Default brain: ${selectedProfile?.defaultBrain || "configured default"}`)}</div>
+      <div class="micro">${escapeHtml(envOverride ? "OBSERVER_PROFILE is set, so the UI preference will not take effect until that environment variable is cleared." : "Changing profile saves a startup preference. Restart Observer to apply plugin, tool, prompt, and UI changes.")}</div>
+    </div>
+  `;
+  profileSelectionSelectEl.onchange = () => {
+    const nextProfileId = String(profileSelectionSelectEl.value || "").trim();
+    const nextProfile = profiles.find((profile) => profile.id === nextProfileId) || selectedProfile;
+    profileSelectionDetailsEl.innerHTML = `
+      <div class="brain-row">
+        <div class="brain-row-actions">
+          <span>
+            <strong>${escapeHtml(nextProfile?.name || nextProfileId || "Profile")}</strong>
+            <div class="micro">${escapeHtml(nextProfile?.id || nextProfileId || "")}</div>
+          </span>
+          <span class="brain-pill">${nextProfileId === activeProfileId ? "active" : "not applied"}</span>
+        </div>
+        <div class="micro">${escapeHtml(nextProfile?.description || "No description.")}</div>
+        <div class="micro">${escapeHtml(`Default tab: ${nextProfile?.ui?.defaultTab || "queue"} | Default brain: ${nextProfile?.defaultBrain || "configured default"}`)}</div>
+        <div class="micro">${escapeHtml(envOverride ? "OBSERVER_PROFILE is set, so the UI preference will not take effect until that environment variable is cleared." : "Save this profile, then restart Observer to apply it.")}</div>
+      </div>
+    `;
+  };
+}
+
+async function loadProfileOptions(options = {}) {
+  if (profileSelectionStatusEl && !options.silent) {
+    profileSelectionStatusEl.textContent = "Loading profile options...";
+  }
+  try {
+    const response = await fetch("/api/profile/options");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || "failed to load profile options");
+    }
+    profileOptionsDraft = cloneJson(payload);
+    renderProfileSwitcher();
+  } catch (error) {
+    profileOptionsDraft = null;
+    if (profileSelectionStatusEl) {
+      profileSelectionStatusEl.textContent = `Failed to load profile options: ${error.message}`;
+    }
+    if (profileSelectionDetailsEl) {
+      profileSelectionDetailsEl.innerHTML = `<div class="panel-subtle">Profile options unavailable.</div>`;
+    }
+  }
+}
+
+async function saveSelectedProfile({ restart = false } = {}) {
+  if (!profileSelectionSelectEl || !profileSelectionStatusEl) {
+    return;
+  }
+  const profileId = String(profileSelectionSelectEl.value || "").trim();
+  if (!profileId) {
+    profileSelectionStatusEl.textContent = "Choose a profile first.";
+    return;
+  }
+  const buttons = [saveProfileSelectionBtn, saveProfileRestartBtn].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; });
+  profileSelectionStatusEl.textContent = restart ? `Saving ${profileId} and requesting restart...` : `Saving ${profileId}...`;
+  try {
+    const response = await pluginAdminFetch("/api/profile/select", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileId, restart: restart === true })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || "failed to save profile");
+    }
+    profileOptionsDraft = cloneJson(payload);
+    renderProfileSwitcher();
+    profileSelectionStatusEl.textContent = payload.message || `Profile ${profileId} saved.`;
+  } catch (error) {
+    profileSelectionStatusEl.textContent = `Profile save failed: ${error.message}`;
+  } finally {
+    renderProfileSwitcher();
+  }
+}
+
 function renderPluginManagerPanel() {
   if (!pluginInventoryListEl || !pluginCapabilityListEl || !pluginRouteListEl) {
     return;
   }
   bindPluginDynamicPanelEvents();
+  renderProfileSwitcher();
   const plugins = getInstalledPlugins();
   if (!plugins.length) {
     pluginInventoryListEl.innerHTML = `<div class="panel-subtle">No plugins are currently loaded.</div>`;
@@ -1787,6 +1922,18 @@ async function loadPluginManagerPanel(options = {}) {
   if (!pluginsHintEl) {
     return;
   }
+  if (pluginManagerLoadInFlight) {
+    return pluginManagerLoadInFlight;
+  }
+  pluginManagerLoadInFlight = doLoadPluginManagerPanel(options);
+  try {
+    return await pluginManagerLoadInFlight;
+  } finally {
+    pluginManagerLoadInFlight = null;
+  }
+}
+
+async function doLoadPluginManagerPanel(options = {}) {
   window.dispatchEvent(new CustomEvent("observer:plugin-load-state", {
     detail: {
       phase: "started",
@@ -1798,6 +1945,7 @@ async function loadPluginManagerPanel(options = {}) {
     pluginsHintEl.textContent = "Loading plugin manager...";
   }
   let catalog = null;
+  await loadProfileOptions({ silent: true });
   try {
     const r = await pluginAdminFetch("/api/plugins/list");
     const j = await r.json();
@@ -1806,6 +1954,7 @@ async function loadPluginManagerPanel(options = {}) {
     }
     catalog = cloneJson(j);
   } catch (error) {
+    pluginManagerLastLoadFailed = true;
     pluginCatalogDraft = null;
     window.dispatchEvent(new CustomEvent("observer:plugin-load-state", {
       detail: {
@@ -1831,6 +1980,7 @@ async function loadPluginManagerPanel(options = {}) {
     return;
   }
 
+  pluginManagerLastLoadFailed = false;
   pluginCatalogDraft = catalog;
 
   try {
@@ -1911,10 +2061,24 @@ async function loadPluginManagerPanel(options = {}) {
     ]);
   }
 }
+
+window.addEventListener("observer:ui-security-unlocked", () => {
+  if (pluginManagerLastLoadFailed || document.getElementById("pluginsTab")?.classList.contains("active")) {
+    loadPluginManagerPanel({ silent: true }).catch(() => {});
+  }
+});
+
+window.addEventListener("observer:tab-activated", (event) => {
+  if (event?.detail?.tabId === "pluginsTab" && pluginManagerLastLoadFailed) {
+    loadPluginManagerPanel({ silent: false }).catch(() => {});
+  }
+});
 Object.assign(observerApp, {
   getAdminUiToken,
   adminFetch: pluginAdminFetch,
+  loadProfileOptions,
   loadPluginManagerPanel,
+  saveSelectedProfile,
   loadPluginPermissionRules,
   savePluginPermissionRules,
   loadPluginTaskLifecycleOutput,

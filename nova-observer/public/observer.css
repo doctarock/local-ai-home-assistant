@@ -1307,6 +1307,43 @@ select.input-warn {
 .panel-drawer:not(.open) .tab-bar {
   background: transparent;
 }
+.panel-drawer.locked .drawer-content {
+  filter: blur(2px);
+  pointer-events: none;
+  user-select: none;
+}
+.panel-drawer.locked .tab-bar button:not(.drawer-toggle-button) {
+  pointer-events: none;
+  opacity: 0.45;
+}
+.ui-security-lock {
+  position: absolute;
+  inset: 10px 10px 10px 56px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 10, 18, 0.64);
+  border-radius: 12px;
+  padding: 18px;
+}
+.ui-security-lock[hidden] {
+  display: none;
+}
+.ui-security-lock-panel {
+  width: min(360px, 100%);
+  background: rgba(12, 18, 32, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 18px;
+  display: grid;
+  gap: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.ui-security-lock-title {
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
 .drawer-content {
   min-width: 0;
   min-height: 0;

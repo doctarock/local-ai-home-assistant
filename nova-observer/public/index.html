@@ -675,6 +675,24 @@
               <section class="brain-editor-card">
                 <div class="panel-head compact">
                   <div>
+                    <h3>Mode Profile</h3>
+                    <div class="panel-subtle">Choose the Observer startup profile that shapes plugins, tools, prompts, and the UI.</div>
+                  </div>
+                  <div class="controls" style="grid-template-columns: 1fr 1fr; margin-bottom: 0;">
+                    <button id="saveProfileSelectionBtn" class="secondary" type="button">Save profile</button>
+                    <button id="saveProfileRestartBtn" type="button">Save + restart</button>
+                  </div>
+                </div>
+                <div class="controls">
+                  <select id="profileSelectionSelect"></select>
+                </div>
+                <div id="profileSelectionStatus" class="micro">Loading profile options...</div>
+                <div id="profileSelectionDetails" class="stack-list">Loading profiles...</div>
+              </section>
+
+              <section class="brain-editor-card">
+                <div class="panel-head compact">
+                  <div>
                     <h3>Install Plugin Package</h3>
                     <div class="panel-subtle">Upload a plugin entry file or zip package. It will be installed into the runtime modules area and left disabled until you restart Observer and enable it manually.</div>
                   </div>

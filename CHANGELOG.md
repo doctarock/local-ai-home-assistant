@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-06-30 1.5.0
+
+### Added
+- Added harness evaluation system that tracks worker health signals (hidden tool violations, inspection-heavy passes, stalled completion) and embeds a harness health summary and resume guidance into task resume context and escalation review.
+- Added profiles system (`nova-observer/profiles/`) for profile-based plugin, brain, tool, and UI configuration with a `default` profile shipped out of the box.
+- Added voice identity grace period: after a verified voice identity is confirmed, it persists for a configurable window (default 5 minutes) without requiring re-identification on every command.
+- Added voice-based UI lock with configurable session inactivity timeout (`OBSERVER_UI_LOCK_INACTIVITY_MS`), a server unlock token (`OBSERVER_SERVER_UNLOCK_TOKEN`), and automatic lock/unlock tied to voice profile presence.
+- Added `listRecordedTaskIds` to the flight recorder service for browsing task histories sorted by recency.
+- Added `providerHistory` and `hookTrace` to the flight recorder resume context so workers resuming a task see LLM call history and hook activity alongside tool steps and transactions.
+- Added `harness:check` npm script (`node ./run-harness-checks.js`) for pre-flight harness integrity checks.
+- Added `phoneSources` trust registry and `phoneNumbers` field on individual trust contacts.
+- Added voice navigation commands for tab and panel switching and scroll control.
+- Added brain tool workout tab to developer tools.
+- Added `quietMode` config option to suppress idle status updates.
+- Added regression and unit coverage for harness gate self-audit, execution runner logic, escalation review, failure domain, worker prompting, worker tools, admin security, runtime support, task execution support, and intake routing.
+
+### Changed
+- Improved worker prompting with focused context compaction (line and total character limits), concrete tool envelope examples keyed to the worker's visible tool set, and tighter tool selection guidance for hidden-tool violations and inspection-heavy loops.
+- Improved escalation review to include a compact harness eval snapshot with health status, behavioral signals, tool selection confidence, and hidden-tool violation counts.
+- Expanded flight recorder to capture provider history and hook traces; harness health status and resume guidance are now included in the context summary passed to resumed workers.
+- Simplified default brain roster, endpoints, and assignments — removed legacy LAN/laptop endpoint entries; local-only configuration ships as the default.
+- Improved developer tools flight recorder tab with broader packet type coverage.
+
+### Fixed
+- Fixed `uniquePaths` variable hoisting in flight recorder resume context so it is calculated before the conditional that uses it.
+- Fixed worker tool handling for `summarize` pseudo-tool calls so they produce a non-fatal handoff result instead of an unhandled error.
+
 ## 2026-06-04 1.4.0
 
 ### Added

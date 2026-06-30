@@ -19,14 +19,17 @@ export function createObserverFailureDomain(options = {}) {
     if (/\bloop repair.*did not hold\b/.test(lower)) return "loop_repair_failed";
     if (/\btool plan repeated\b|\brepeated tool plan\b|\brepeated the same tool plan\b/.test(lower)) return "repeated_tool_plan";
     if (/\bplanner.*could not repair it\b/.test(lower)) return "loop_repair_failed";
+    if (/\bnot available in the current focused tool set\b|\bhidden tool\b|\bhidden_tool_not_available\b/.test(lower)) return "hidden_tool_not_available";
     if (/\blow-value tool loop\b|\btool loop\b|\busing tools without concrete progress\b/.test(lower)) return "low_value_tool_loop";
-    if (/\bno inspection\b|\bwithout any concrete inspection\b/.test(lower)) return "no_inspection";
+    if (/\bno inspection\b|\bwithout any concrete inspection\b|\bwithout inspecting concrete\b|\bclaimed completion without inspecting\b/.test(lower)) return "no_inspection";
     if (/\bspeculative\b|\bfuture-tense\b/.test(lower)) return "speculative_completion";
     if (/\bno concrete outcome\b/.test(lower)) return "no_concrete_outcome";
     if (/\bno-change conclusion before inspecting enough\b/.test(lower)) return "no_change_insufficient_inspection";
     if (/\bno-change conclusion without naming the inspected targets\b|\bno change was possible without naming the inspected targets\b/.test(lower)) return "no_change_missing_targets";
     if (/\bno-change conclusion\b/.test(lower) && /\bobjective explicitly required a concrete improvement\b/.test(lower)) return "project_no_change_disallowed";
     if (/\bproject-cycle finalization\b/.test(lower) && /\bno concrete project file change was recorded\b/.test(lower)) return "project_missing_concrete_change";
+    if (/\bproject-cycle finalization\b/.test(lower) && /\bwithout naming the changed project target\b/.test(lower)) return "project_final_missing_changed_target";
+    if (/\bunresolved completion policy blockers\b|\bcompletion policy still has unresolved blockers\b/.test(lower)) return "project_completion_policy_blocked";
     if (/\bproject-cycle finalization\b/.test(lower) && /\bproject-todo\.md was not updated\b/.test(lower)) return "project_missing_todo_update";
     if (/\bproject-cycle finalization\b/.test(lower) && /\bdocumentation-only changes\b/.test(lower)) return "project_documentation_only_mismatch";
     if (/\binvalid envelope\b|\bechoed tool results\b/.test(lower)) return "invalid_envelope";
@@ -49,7 +52,7 @@ export function createObserverFailureDomain(options = {}) {
 
   function isCapabilityMismatchFailure(classification = "", task = {}) {
     const normalized = String(classification || "").trim().toLowerCase();
-    if (["no_inspection", "no_concrete_outcome", "speculative_completion", "repeated_tool_plan", "low_value_tool_loop", "loop_repair_failed", "capability_unavailable"].includes(normalized)) {
+    if (["no_inspection", "no_concrete_outcome", "speculative_completion", "repeated_tool_plan", "low_value_tool_loop", "loop_repair_failed", "capability_unavailable", "hidden_tool_not_available"].includes(normalized)) {
       if (normalized === "low_value_tool_loop") {
         const diagnostics = task?.toolLoopDiagnostics && typeof task.toolLoopDiagnostics === "object" ? task.toolLoopDiagnostics : null;
         const hadConcreteProgress = diagnostics && (Number(diagnostics.concreteProgressStepCount || 0) > 0 || (Array.isArray(diagnostics.uniqueConcreteInspectionTargets) && diagnostics.uniqueConcreteInspectionTargets.length > 0));
@@ -116,6 +119,19 @@ export function createObserverFailureDomain(options = {}) {
       || (projectPath && tertiaryTarget ? `${projectPath}/${tertiaryTarget}` : "");
     const retryLines = [];
     const normalizedFailure = String(failureClassification || "").trim().toLowerCase();
+    const harnessSignals = Array.isArray(task?.harnessEvalSnapshot?.signals)
+      ? task.harnessEvalSnapshot.signals.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const harnessTools = task?.harnessEvalSnapshot?.tools && typeof task.harnessEvalSnapshot.tools === "object"
+      ? task.harnessEvalSnapshot.tools
+      : {};
+    const harnessHealth = task?.harnessEvalSnapshot?.health && typeof task.harnessEvalSnapshot.health === "object"
+      ? task.harnessEvalSnapshot.health
+      : {};
+    const harnessHealthStatus = String(harnessHealth.status || "").trim();
+    const harnessHealthReasons = Array.isArray(harnessHealth.reasons)
+      ? harnessHealth.reasons.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
 
     if (normalizedFailure === "no_inspection") {
       retryLines.push("Retry note: the previous worker finished without any concrete inspection.");
@@ -157,9 +173,14 @@ export function createObserverFailureDomain(options = {}) {
     } else if (normalizedFailure === "low_value_tool_loop") {
       retryLines.push("Retry note: the previous worker kept using tools without converging to a concrete change, artifact, capability request, or valid no-change conclusion.");
       retryLines.push("Do not spend another pass on inspection-only steps once you already have enough evidence to act.");
-      retryLines.push("If the fix is understood, use edit_file for targeted changes, write_file for new or fully rewritten files, or move_path for renames instead of more read-only inspection.");
-      retryLines.push("For read_document, list_files, write_file, and edit_file, include the explicit full path in the path field on every tool call.");
+      retryLines.push("If the fix is understood, use an available edit, write, move, or validation tool instead of more read-only inspection.");
+      retryLines.push("For file and directory tools, include the explicit full path in the path field on every tool call.");
       retryLines.push("Either make one concrete change, search the skill library for the missing capability, record a capability request, or conclude with the exact phrase 'no change is possible' and the inspected paths.");
+    } else if (normalizedFailure === "hidden_tool_not_available") {
+      retryLines.push("Retry note: the previous worker tried to call a tool that was not exposed for the focused task.");
+      retryLines.push("Use only the tools listed in the current prompt's Available tools section.");
+      retryLines.push("If the hidden tool is genuinely required, search the skill library or record a capability request instead of calling it directly.");
+      retryLines.push("Otherwise, complete the next step with the available file, inspection, edit, or no-change tools.");
     } else if (normalizedFailure === "project_no_change_disallowed") {
       retryLines.push("Retry note: the previous worker used a no-change conclusion even though this objective required a concrete improvement.");
       if (inspectFirst) {
@@ -172,6 +193,21 @@ export function createObserverFailureDomain(options = {}) {
         retryLines.push(`Continue from ${inspectFirst} and complete one concrete project change before finishing.`);
       }
       retryLines.push("If this is a planning or export-readiness pass, update the project tracking docs directly and summarize that completed documentation change explicitly.");
+    } else if (normalizedFailure === "project_final_missing_changed_target") {
+      retryLines.push("Retry note: the previous worker changed project files but finished without naming the changed project target.");
+      retryLines.push("Do not repeat the vague final answer; inspect the prior changed files if needed, then finish with final_text that names at least one changed project file or directory.");
+    } else if (normalizedFailure === "project_completion_policy_blocked") {
+      retryLines.push("Retry note: the previous worker hit unresolved project-cycle completion policy blockers.");
+      const completion = task?.harnessEvalSnapshot?.completion && typeof task.harnessEvalSnapshot.completion === "object"
+        ? task.harnessEvalSnapshot.completion
+        : {};
+      const reasons = Array.isArray(completion.rejectionReasons)
+        ? completion.rejectionReasons.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 3)
+        : [];
+      if (reasons.length) {
+        retryLines.push(`Completion blocker evidence: ${reasons.join(" | ")}`);
+      }
+      retryLines.push("Resolve the named blocker before finishing; the next final_text must include changed files, validation outcome, or valid no-change evidence as required by the policy.");
     } else if (normalizedFailure === "project_missing_todo_update") {
       retryLines.push("Retry note: the previous worker made progress but did not update PROJECT-TODO.md before finishing.");
       if (projectPath) {
@@ -201,8 +237,35 @@ export function createObserverFailureDomain(options = {}) {
       retryLines.push("Narrow the next pass to one concrete move before broadening the scope.");
     }
 
-    if (!retryLines.length) {
+    const hasHarnessRetrySignal = harnessSignals.length > 0
+      || harnessHealthReasons.length > 0
+      || Number(harnessTools.hiddenToolViolationCount || 0) > 0
+      || (Number(harnessTools.readOnlyOkCount || 0) > 0 && Number(harnessTools.actionOkCount || 0) === 0)
+      || harnessTools.toolSelectionConfident === false;
+    if (!retryLines.length && hasHarnessRetrySignal) {
+      retryLines.push("Retry note: harness telemetry found a stuck execution pattern in the previous run.");
+    } else if (!retryLines.length) {
       return baseMessage;
+    }
+    if (harnessSignals.includes("inspection_heavy")) {
+      retryLines.push("Harness note: the previous run was inspection-heavy. Do not replay another broad read/list pass; choose one concrete action, capability request, or valid no-change conclusion after the required first inspection.");
+    }
+    if (harnessSignals.includes("hidden_tool_violation") || Number(harnessTools.hiddenToolViolationCount || 0) > 0) {
+      retryLines.push("Harness note: the previous run tried a hidden tool. Use only tools exposed in the current prompt, or request/search for the missing capability instead of calling hidden tools directly.");
+    }
+    if (Number(harnessTools.readOnlyOkCount || 0) > 0 && Number(harnessTools.actionOkCount || 0) === 0) {
+      retryLines.push(`Harness note: previous read/action balance was ${Number(harnessTools.readOnlyOkCount || 0)}/0. Move from inspection into an available action tool or a valid no-change conclusion.`);
+      retryLines.push("Harness next-turn contract: before any more read-only calls, name the one missing fact that blocks action; otherwise use an available action/capability tool, ask one focused QUESTION FOR USER, or finish with the required no-change wording and inspected paths.");
+    }
+    if (harnessHealthReasons.includes("tool_selection_uncertain") || harnessTools.toolSelectionConfident === false) {
+      const selectorReason = String(harnessTools.toolSelectionReason || "").trim();
+      const matchedFamilies = Array.isArray(harnessTools.matchedToolFamilies)
+        ? harnessTools.matchedToolFamilies.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      retryLines.push(`Harness note: tool selection was uncertain${selectorReason ? ` (${selectorReason})` : ""}${matchedFamilies.length ? ` after matching ${matchedFamilies.join(", ")}` : ""}. If a needed capability is missing, request/search for it instead of guessing hidden tools.`);
+    }
+    if (harnessHealthStatus === "needs_attention" && harnessHealthReasons.length) {
+      retryLines.push(`Harness health: needs_attention (${harnessHealthReasons.join(", ")}). Treat these as constraints for the retry, not background notes.`);
     }
     return [baseMessage, "", ...retryLines].join("\n");
   }
@@ -240,6 +303,27 @@ export function createObserverFailureDomain(options = {}) {
     }
     if (task?.toolLoopDiagnostics?.summary) {
       details.push(`- Tool loop: ${String(task.toolLoopDiagnostics.summary).trim()}`);
+    }
+    if (task?.harnessEvalSnapshot && typeof task.harnessEvalSnapshot === "object") {
+      const signals = Array.isArray(task.harnessEvalSnapshot.signals)
+        ? task.harnessEvalSnapshot.signals.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const tools = task.harnessEvalSnapshot.tools && typeof task.harnessEvalSnapshot.tools === "object"
+        ? task.harnessEvalSnapshot.tools
+        : {};
+      const prompt = task.harnessEvalSnapshot.prompt && typeof task.harnessEvalSnapshot.prompt === "object"
+        ? task.harnessEvalSnapshot.prompt
+        : {};
+      const health = task.harnessEvalSnapshot.health && typeof task.harnessEvalSnapshot.health === "object"
+        ? task.harnessEvalSnapshot.health
+        : {};
+      const healthReasons = Array.isArray(health.reasons)
+        ? health.reasons.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const matchedFamilies = Array.isArray(tools.matchedToolFamilies)
+        ? tools.matchedToolFamilies.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      details.push(`- Harness eval: health=${String(health.status || "unknown").trim() || "unknown"}${healthReasons.length ? ` (${healthReasons.join(", ")})` : ""}; signals=${signals.join(", ") || "none"}; contextReduced=${prompt.latestContextReduced === true ? "yes" : "no"}; visibleTools=${Number(tools.latestVisibleToolCount || 0)}; selector=${tools.toolSelectionConfident === false ? "uncertain" : tools.toolSelectionConfident === true ? "confident" : "unknown"}${tools.toolSelectionReason ? `/${String(tools.toolSelectionReason).trim()}` : ""}${matchedFamilies.length ? ` [${matchedFamilies.join(", ")}]` : ""}; hiddenToolHits=${Number(tools.hiddenToolViolationCount || 0)}; read/action=${Number(tools.readOnlyOkCount || 0)}/${Number(tools.actionOkCount || 0)}`);
     }
     await fs.mkdir(pathModule.dirname(failureTelemetryLogPath), { recursive: true });
     await fs.appendFile(failureTelemetryLogPath, `${details.join("\n")}\n\n`, "utf8");

@@ -173,10 +173,6 @@ export function createOllamaRuntimeService({
       return "";
     }
     const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    const normalizedLocalBaseUrl = normalizeOllamaBaseUrl(localOllamaBaseUrl);
-    if (scope === "auto" && normalizedBaseUrl === normalizedLocalBaseUrl) {
-      return `endpoint:${normalizedBaseUrl}`;
-    }
     const explicitLane = String(laneHint || "").trim();
     if (scope !== "endpoint" && explicitLane) {
       return `lane:${explicitLane}`;
@@ -192,6 +188,10 @@ export function createOllamaRuntimeService({
       } catch {
         // Fall through to endpoint lease.
       }
+    }
+    const normalizedLocalBaseUrl = normalizeOllamaBaseUrl(localOllamaBaseUrl);
+    if (scope === "auto" && normalizedBaseUrl === normalizedLocalBaseUrl) {
+      return `endpoint:${normalizedBaseUrl}`;
     }
     return `endpoint:${normalizedBaseUrl}`;
   }
@@ -836,11 +836,28 @@ export function createOllamaRuntimeService({
     const inspectFirstTarget = projectsRuntime?.extractTaskDirectiveValue?.(message, "Inspect first:");
     const inspectSecondTarget = projectsRuntime?.extractTaskDirectiveValue?.(message, "Inspect second if needed:");
     const inspectThirdTarget = projectsRuntime?.extractTaskDirectiveValue?.(message, "Inspect third if needed:");
+    const concreteSchemaExample = JSON.stringify({
+      assistant_message: "Reading the next concrete target.",
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: {
+            name: "read_document",
+            arguments: JSON.stringify({
+              path: inspectSecondTarget || inspectFirstTarget || "/home/nova/.observer-sandbox/workspace/simple-check-project/directive.md"
+            })
+          }
+        }
+      ],
+      final: false
+    });
     const prompt = [
       "You are Nova's tool-plan repair helper.",
       "Return one valid JSON object only. No prose, no markdown, no code fences.",
-      "Use exactly this schema:",
-      "{\"assistant_message\":\"...\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"tool_name\",\"arguments\":\"{\\\"key\\\":\\\"value\\\"}\"}}],\"final\":false}",
+      "Use this Observer assistant envelope shape, replacing only the concrete tool name and arguments with the best next move:",
+      concreteSchemaExample,
+      "Do not return only the argument object. function.arguments must be a JSON-encoded string.",
       "Choose exactly one next move.",
       "Do not repeat the same tool call with the same arguments.",
       "Prefer a concrete inspection or execution step that advances the task immediately.",

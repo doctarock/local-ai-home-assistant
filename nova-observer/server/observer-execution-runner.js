@@ -1,3 +1,105 @@
+export function buildCompactHarnessEvalSnapshot(evalSummary = {}) {
+  if (!evalSummary || typeof evalSummary !== "object") {
+    return null;
+  }
+  return {
+    health: evalSummary.health && typeof evalSummary.health === "object"
+      ? {
+        status: String(evalSummary.health.status || "").trim(),
+        reasons: Array.isArray(evalSummary.health.reasons)
+          ? evalSummary.health.reasons.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 8)
+          : []
+      }
+      : { status: "", reasons: [] },
+    signals: Array.isArray(evalSummary.signals) ? evalSummary.signals.slice(0, 12) : [],
+    recommendations: Array.isArray(evalSummary.recommendations) ? evalSummary.recommendations.slice(0, 3) : [],
+    prompt: {
+      latestContextReduced: evalSummary.prompt?.latestContextReduced === true,
+      latestPromptChars: Number(evalSummary.prompt?.latestPromptChars || 0),
+      latestUserRequestChars: Number(evalSummary.prompt?.latestUserRequestChars || 0),
+      latestOriginalUserRequestChars: Number(evalSummary.prompt?.latestOriginalUserRequestChars || 0)
+    },
+    tools: {
+      latestVisibleToolCount: Number(evalSummary.tools?.latestVisibleToolCount || 0),
+      toolSelectionConfident: evalSummary.tools?.toolSelectionConfident === true,
+      toolSelectionReason: String(evalSummary.tools?.toolSelectionReason || "").trim(),
+      matchedToolFamilies: Array.isArray(evalSummary.tools?.matchedToolFamilies)
+        ? evalSummary.tools.matchedToolFamilies.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 10)
+        : [],
+      optionalToolFamiliesMatched: Number(evalSummary.tools?.optionalToolFamiliesMatched || 0),
+      totalOptionalToolFamilies: Number(evalSummary.tools?.totalOptionalToolFamilies || 0),
+      hiddenToolViolationCount: Number(evalSummary.tools?.hiddenToolViolationCount || 0),
+      readOnlyOkCount: Number(evalSummary.tools?.readOnlyOkCount || 0),
+      actionOkCount: Number(evalSummary.tools?.actionOkCount || 0),
+      failureClasses: evalSummary.tools?.failureClasses && typeof evalSummary.tools.failureClasses === "object"
+        ? { ...evalSummary.tools.failureClasses }
+        : {}
+    },
+    completion: {
+      policyRejectionCount: Number(evalSummary.completion?.policyRejectionCount || 0),
+      rejectionReasons: Array.isArray(evalSummary.completion?.rejectionReasons)
+        ? evalSummary.completion.rejectionReasons.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 4)
+        : []
+    }
+  };
+}
+
+export function buildSummarizePseudoToolResult(args = {}, { compactTaskText = (value = "") => String(value || "") } = {}) {
+  const source = args && typeof args === "object" ? args : {};
+  const content = String(source.content ?? source.text ?? source.input ?? source.body ?? "").trim();
+  if (!content) {
+    return null;
+  }
+  const requestedFocus = String(source.focus || source.instruction || source.instructions || "").replace(/\s+/g, " ").trim();
+  const summary = compactTaskText(content.replace(/\s+/g, " ").trim(), 900);
+  return {
+    ok: true,
+    note: "summarize is not an exposed worker tool; Observer treated this as a non-fatal summarization handoff. Use your own final_text for summaries, or use visible write/edit tools for workspace changes.",
+    focus: requestedFocus,
+    summary
+  };
+}
+
+export function shouldRejectFinalMissingChangedProjectTarget({
+  isProjectCycleTask = false,
+  objectiveRequiresConcreteImprovement = false,
+  hasNoChangeConclusion = false,
+  changedConcreteProjectFiles = [],
+  completionState = {}
+} = {}) {
+  return Boolean(
+    isProjectCycleTask
+    && objectiveRequiresConcreteImprovement
+    && !hasNoChangeConclusion
+    && Array.isArray(changedConcreteProjectFiles)
+    && changedConcreteProjectFiles.length > 0
+    && Number(completionState?.namedChangedConcreteProjectFileCount || 0) === 0
+  );
+}
+
+export function buildUnhandledProjectCycleCompletionBlocker({
+  isProjectCycleTask = false,
+  requiresConcreteOutcome = false,
+  completionState = {},
+  objectiveText = ""
+} = {}) {
+  const blockingCodes = Array.isArray(completionState?.blockingCodes)
+    ? completionState.blockingCodes.map((code) => String(code || "").trim()).filter(Boolean)
+    : [];
+  if (!isProjectCycleTask || !requiresConcreteOutcome || !blockingCodes.length || completionState?.eligibleForCompletion === true) {
+    return null;
+  }
+  return {
+    reason: `worker attempted project-cycle finalization with unresolved completion policy blockers: ${blockingCodes.join(", ")}`,
+    guidance: [
+      "Your previous final_text was rejected because project-cycle completion policy still has unresolved blockers.",
+      `Blocking codes: ${blockingCodes.join(", ")}.`,
+      objectiveText ? `Objective: ${objectiveText}.` : "",
+      "Keep working with the available tools until those blockers are resolved, then finish with the concrete changed files, validation outcome, or valid no-change evidence."
+    ].filter(Boolean)
+  };
+}
+
 export function createObserverExecutionRunner(context = {}) {
   const {
     annotateNovaSpeechText,
@@ -7,6 +109,8 @@ export function createObserverExecutionRunner(context = {}) {
     buildToolLoopSummaryText,
     buildToolSemanticFailureMessage,
     buildTranscriptForPrompt,
+    buildFocusedWorkerUserRequest = ({ message = "" } = {}) => String(message || ""),
+    buildWorkerToolAccess = () => ({ toolNames: [] }),
     buildVisionImagesFromAttachments,
     buildWorkerSystemPrompt,
     collectTrackedWorkspaceTargets,
@@ -55,11 +159,22 @@ export function createObserverExecutionRunner(context = {}) {
     appendProviderHistory = async () => null,
     appendToolStep = async () => null,
     patchProviderSummary = async () => null,
+    buildTaskHarnessEval = async () => null,
     writeProviderSummary = async () => null,
     OBSERVER_CONTAINER_WORKSPACE_ROOT,
     loopLessonsHostPath,
     runPluginHook = async (_, payload) => payload
   } = context;
+
+  function hashPromptText(value = "") {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
 
   async function executeObserverRunCore({
     message,
@@ -136,6 +251,23 @@ export function createObserverExecutionRunner(context = {}) {
       internalJobType: taskInternalJobType,
       taskId: String(normalizedTaskContext?.taskId || "").trim()
     });
+    const focusedUserRequest = buildFocusedWorkerUserRequest({
+      message,
+      preset,
+      internalJobType: taskInternalJobType,
+      runtimeNotesExtra
+    }) || String(message || "");
+    const workerToolAccess = buildWorkerToolAccess({
+      message,
+      preset,
+      internalJobType: taskInternalJobType,
+      runtimeNotesExtra
+    }) || {};
+    const visibleToolNames = new Set(
+      (Array.isArray(workerToolAccess.toolNames) ? workerToolAccess.toolNames : [])
+        .map((toolName) => normalizeToolName(toolName))
+        .filter(Boolean)
+    );
     const emitExecutionEvent = async (hookName = "", payload = {}) => {
       await runPluginHook(hookName, {
         at: Date.now(),
@@ -160,6 +292,16 @@ export function createObserverExecutionRunner(context = {}) {
 
     const rejectOrRetryInvalidConcreteFinal = (stderr, malformedResponse, feedbackLines) => {
       invalidConcreteFinalCount += 1;
+      appendHookTrace(String(normalizedTaskContext?.taskId || "").trim(), {
+        hook: "worker:completion-policy:rejected",
+        pluginId: "observer-core",
+        effect: compactTaskText(String(stderr || "completion policy rejected final_text").trim(), 500),
+        payloadPreview: compactTaskText(JSON.stringify({
+          attempt: invalidConcreteFinalCount,
+          feedback: Array.isArray(feedbackLines) ? feedbackLines : [],
+          finalText: String(malformedResponse || "").slice(0, 1200)
+        }), 1400)
+      }).catch(() => {});
       if (invalidConcreteFinalCount === 1) {
         transcript.push({
           role: "assistant",
@@ -318,9 +460,10 @@ export function createObserverExecutionRunner(context = {}) {
       const toolHistory = transcript.length
         ? `\n\nConversation so far:\n${buildTranscriptForPrompt(transcript)}`
         : "";
+      const fullPrompt = `${systemPrompt}${toolHistory}\n\nUser request:\n${focusedUserRequest}`;
       const result = await runOllamaPrompt(
         brain.model,
-        `${systemPrompt}${toolHistory}\n\nUser request:\n${message}`,
+        fullPrompt,
         {
           signal: abortSignal,
           baseUrl: brain.ollamaBaseUrl,
@@ -339,13 +482,28 @@ export function createObserverExecutionRunner(context = {}) {
         step: step + 1,
         role: "assistant",
         ok: result.ok === true,
+        promptHash: hashPromptText(fullPrompt),
         rawText: String(result.text || ""),
         error: result.ok ? "" : String(result.stderr || "worker model failed"),
         providerState: {
           code: result.code,
           timedOut: result.timedOut === true,
           baseUrl: String(brain?.ollamaBaseUrl || "").trim(),
-          provider: String(brain?.provider || "ollama").trim() || "ollama"
+          provider: String(brain?.provider || "ollama").trim() || "ollama",
+          promptChars: fullPrompt.length,
+          systemPromptChars: systemPrompt.length,
+          userRequestChars: String(focusedUserRequest || "").length,
+          originalUserRequestChars: String(message || "").length,
+          contextReduced: String(focusedUserRequest || "") !== String(message || ""),
+          visibleToolCount: visibleToolNames.size,
+          visibleTools: [...visibleToolNames].sort(),
+          toolSelectionConfident: workerToolAccess?.toolSelection?.confident === true,
+          toolSelectionReason: String(workerToolAccess?.toolSelection?.reason || "").trim(),
+          matchedToolFamilies: Array.isArray(workerToolAccess?.toolSelection?.matchedFamilies)
+            ? workerToolAccess.toolSelection.matchedFamilies.map((value) => String(value || "").trim()).filter(Boolean)
+            : [],
+          optionalToolFamiliesMatched: Number(workerToolAccess?.toolSelection?.optionalFamiliesMatched || 0),
+          totalOptionalToolFamilies: Number(workerToolAccess?.toolSelection?.totalOptionalFamilies || 0)
         }
       }).catch(() => {});
       if (!result.ok) {
@@ -583,6 +741,12 @@ export function createObserverExecutionRunner(context = {}) {
         const projectTodoPath = projectCyclePolicy.projectTodoPath;
         const usedWriteTool = completionState.usedWriteTool;
         const usedInspectionTool = completionState.usedInspectionTool;
+        const usedConcreteActionTool = successfulToolNames.some((name) => {
+          const normalizedName = normalizeToolName(name);
+          return normalizedName
+            && !["list_files", "read_document", "read_file", "shell_command", "web_fetch", "summarize"].includes(normalizedName)
+            && !["search_skill_library", "inspect_skill_library", "list_installed_skills", "request_skill_installation", "request_tool_addition"].includes(normalizedName);
+        });
         const hasConcreteFileChange = completionState.hasConcreteFileChange;
         const hasConcreteImplementationInspection = completionState.hasConcreteImplementationInspection;
         const changedConcreteProjectFiles = completionState.changedConcreteProjectFiles;
@@ -681,7 +845,7 @@ export function createObserverExecutionRunner(context = {}) {
           }
           continue;
         }
-        if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedInspectionTool && !hasConcreteFileChange) {
+        if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedInspectionTool && !hasConcreteFileChange && !(usedConcreteActionTool && !isProjectCycleTask)) {
           const forcedInspectionTarget = inspectFirstTarget || (projectRootTargets.length ? projectRootTargets[0] : "");
           if (isProjectCycleTask && forcedInspectionTarget && invalidConcreteFinalCount === 0) {
             try {
@@ -844,6 +1008,29 @@ export function createObserverExecutionRunner(context = {}) {
           continue;
         }
         if (
+          shouldRejectFinalMissingChangedProjectTarget({
+            isProjectCycleTask,
+            objectiveRequiresConcreteImprovement: objectiveRequiresConcreteImprovement(objectiveText),
+            hasNoChangeConclusion,
+            changedConcreteProjectFiles,
+            completionState
+          })
+        ) {
+          const retry = rejectOrRetryInvalidConcreteFinal(
+            "worker attempted project-cycle finalization without naming the changed project target",
+            finalText,
+            [
+              "Your previous final_text was rejected because it did not name the concrete project file that changed.",
+              "Finish only after your final_text names at least one changed project file or directory.",
+              `Changed project targets detected: ${changedConcreteProjectFiles.map((file) => file.containerPath || file.fullPath || "").filter(Boolean).slice(0, 4).join(", ") || "unknown"}.`
+            ]
+          );
+          if (retry) {
+            return retry;
+          }
+          continue;
+        }
+        if (
           isProjectCycleTask
           && completionState.requiresNonDocumentationArtifact
           && !hasNoChangeConclusion
@@ -879,7 +1066,7 @@ export function createObserverExecutionRunner(context = {}) {
           }
           continue;
         }
-        if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedWriteTool && !changedOutputFiles.length && !changedWorkspaceFiles.length && !hasNoChangeConclusion) {
+        if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedWriteTool && !changedOutputFiles.length && !changedWorkspaceFiles.length && !hasNoChangeConclusion && !completionState.hasMachineVerifiableValidation) {
           const retry = rejectOrRetryInvalidConcreteFinal(
             "worker claimed completion without changing files, producing artifacts, or proving a no-change conclusion",
             finalText,
@@ -888,6 +1075,23 @@ export function createObserverExecutionRunner(context = {}) {
               "Keep working instead of closing the task from analysis alone.",
               "Your next response should either make a concrete change, produce an artifact, or use the exact phrase 'no change is possible' with the inspected paths."
             ]
+          );
+          if (retry) {
+            return retry;
+          }
+          continue;
+        }
+        const unhandledCompletionBlocker = buildUnhandledProjectCycleCompletionBlocker({
+          isProjectCycleTask,
+          requiresConcreteOutcome,
+          completionState,
+          objectiveText
+        });
+        if (unhandledCompletionBlocker) {
+          const retry = rejectOrRetryInvalidConcreteFinal(
+            unhandledCompletionBlocker.reason,
+            finalText,
+            unhandledCompletionBlocker.guidance
           );
           if (retry) {
             return retry;
@@ -1172,6 +1376,90 @@ export function createObserverExecutionRunner(context = {}) {
         const name = normalizeToolName(rawName) || rawName;
         const parsedArgs = parseToolCallArgs(toolCall);
         const toolCallStartedAt = Date.now();
+        if (visibleToolNames.size && !visibleToolNames.has(name)) {
+          const summarizePseudoResult = name === "summarize"
+            ? buildSummarizePseudoToolResult(parsedArgs, { compactTaskText })
+            : null;
+          if (summarizePseudoResult) {
+            runPluginHook("worker:tool-call:completed", {
+              at: Date.now(),
+              name,
+              args: parsedArgs,
+              semanticOk: true,
+              transportOk: true,
+              durationMs: Date.now() - toolCallStartedAt,
+              remappedHiddenTool: true,
+              taskId: String(normalizedTaskContext?.taskId || "").trim(),
+              sessionId: String(sessionId || "").trim()
+            }).catch(() => {});
+            await appendToolStep(String(normalizedTaskContext?.taskId || "").trim(), {
+              step: step + 1,
+              toolCallId: String(toolCall?.id || "").trim(),
+              name,
+              argsPreview: JSON.stringify(parsedArgs || {}),
+              transportOk: true,
+              semanticOk: true,
+              durationMs: Date.now() - toolCallStartedAt,
+              toolResult: summarizePseudoResult,
+              resultPreview: JSON.stringify(summarizePseudoResult || {}).slice(0, 4000)
+            }).catch(() => {});
+            return {
+              toolCall,
+              name,
+              parsedArgs,
+              transportOk: true,
+              semanticOk: true,
+              toolResult: summarizePseudoResult,
+              compressedResult: summarizePseudoResult,
+              inspectionTargetKey: "",
+              error: ""
+            };
+          }
+          const availableTools = [...visibleToolNames].sort().join(", ");
+          const error = `tool "${name || rawName || "(unknown)"}" is not available in the current focused tool set. Available tools: ${availableTools || "(none)"}`;
+          appendHookTrace(String(normalizedTaskContext?.taskId || "").trim(), {
+            hook: "worker:tool-call:hidden-tool",
+            pluginId: "observer-core",
+            effect: `Blocked hidden tool call "${name || rawName || "(unknown)"}"`,
+            payloadPreview: compactTaskText(JSON.stringify({
+              requestedTool: name || rawName || "",
+              availableTools: [...visibleToolNames].sort()
+            }), 1000)
+          }).catch(() => {});
+          runPluginHook("worker:tool-call:completed", {
+            at: Date.now(),
+            name,
+            args: parsedArgs,
+            semanticOk: false,
+            transportOk: false,
+            durationMs: Date.now() - toolCallStartedAt,
+            error,
+            taskId: String(normalizedTaskContext?.taskId || "").trim(),
+            sessionId: String(sessionId || "").trim()
+          }).catch(() => {});
+          await appendToolStep(String(normalizedTaskContext?.taskId || "").trim(), {
+            step: step + 1,
+            toolCallId: String(toolCall?.id || "").trim(),
+            name,
+            argsPreview: JSON.stringify(parsedArgs || {}),
+            transportOk: false,
+            semanticOk: false,
+            durationMs: Date.now() - toolCallStartedAt,
+            failureClass: "hidden_tool_not_available",
+            error
+          }).catch(() => {});
+          return {
+            toolCall,
+            name,
+            parsedArgs,
+            transportOk: false,
+            semanticOk: false,
+            toolResult: null,
+            compressedResult: null,
+            inspectionTargetKey: "",
+            error
+          };
+        }
         runPluginHook("worker:tool-call:started", {
           at: toolCallStartedAt,
           name,
@@ -1508,7 +1796,8 @@ export function createObserverExecutionRunner(context = {}) {
           stepDiagnostics,
           lowValueStreak: consecutiveLowValueSteps,
           requireConcreteConvergence: requiresConcreteOutcome,
-          mentionsSkillsOrToolbelt
+          mentionsSkillsOrToolbelt,
+          availableToolNames: [...visibleToolNames]
         })
       });
     }
@@ -1547,9 +1836,20 @@ export function createObserverExecutionRunner(context = {}) {
     if (taskId) {
       const outcome = result.waitingForUser ? "waiting_for_user" : (result.ok ? "completed" : "failed");
       const stopReason = String(result.toolLoopDiagnostics?.stopReason || (result.timedOut ? "timed_out" : "")).trim();
+      let harnessEvalSnapshot = null;
+      try {
+        const evalSummary = await buildTaskHarnessEval(taskId);
+        harnessEvalSnapshot = buildCompactHarnessEvalSnapshot(evalSummary);
+        if (harnessEvalSnapshot) {
+          result.harnessEvalSnapshot = harnessEvalSnapshot;
+        }
+      } catch {
+        harnessEvalSnapshot = null;
+      }
       patchProviderSummary(taskId, {
         lastRunOutcome: outcome,
         lastRunAt: Date.now(),
+        ...(harnessEvalSnapshot ? { lastHarnessEval: harnessEvalSnapshot } : {}),
         ...(stopReason ? { lastRunStopReason: stopReason } : {})
       }).catch(() => {});
     }

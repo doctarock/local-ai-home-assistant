@@ -418,6 +418,60 @@ export function createObserverQueueProcessor(context = {}) {
         }
       }
 
+      const busyReason = String(runResponse?.stderr || runResponse?.error || "").trim();
+      if (!runResponse?.ok && /^Ollama resource .+ is (already )?busy/i.test(busyReason)) {
+        const busyRetryCount = Number(inProgressTask.resourceBusyRetryCount || 0);
+        const attemptedBrainIds = new Set((Array.isArray(inProgressTask.specialistAttemptedBrainIds) ? inProgressTask.specialistAttemptedBrainIds : [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean));
+        attemptedBrainIds.add(String(inProgressTask.requestedBrainId || "worker").trim() || "worker");
+        const hasUntriedFallback = Array.isArray(inProgressTask.specialistRoute?.fallbackBrainIds)
+          && inProgressTask.specialistRoute.fallbackBrainIds
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+            .some((id) => !attemptedBrainIds.has(id));
+        if (hasUntriedFallback || busyRetryCount >= 2) {
+          runResponse.stderr = `${busyReason} after ${busyRetryCount} retry backoff attempts`;
+        } else {
+          const retryAt = Date.now() + 30000;
+          const requeueNote = compactTaskText(
+            `Model lane was busy during dispatch; requeued for retry after ${formatElapsedShort(retryAt - Date.now())}. ${busyReason}`,
+            260
+          );
+          const requeuedTask = await persistTaskTransition({
+            previousTask: inProgressTask,
+            previousPath: inProgressPath,
+            nextTask: {
+              ...inProgressTask,
+              status: "queued",
+              updatedAt: Date.now(),
+              startedAt: 0,
+              lastHeartbeatAt: 0,
+              notBeforeAt: retryAt,
+              notes: requeueNote,
+              resourceBusyRetryCount: busyRetryCount + 1
+            },
+            eventType: "task.requeued",
+            reason: requeueNote
+          });
+          broadcastObserverEvent({
+            type: "task.requeued",
+            task: requeuedTask
+          });
+          scheduleTaskDispatch(retryAt - Date.now() + 50);
+          return {
+            ok: true,
+            dispatched: true,
+            task: requeuedTask,
+            run: {
+              ...runResponse,
+              requeued: true
+            },
+            message: requeueNote
+          };
+        }
+      }
+
       let finalTask;
       try {
         const canonicalTask = await findIndexedTaskById(inProgressTask.id);
@@ -478,6 +532,9 @@ export function createObserverQueueProcessor(context = {}) {
           resultSummary: waitingSummary,
           outputFiles: runResponse.outputFiles || [],
           toolLoopDiagnostics: runResponse.toolLoopDiagnostics || undefined,
+          harnessEvalSnapshot: runResponse.harnessEvalSnapshot && typeof runResponse.harnessEvalSnapshot === "object"
+            ? runResponse.harnessEvalSnapshot
+            : undefined,
           malformedResponse: runResponse.malformedResponse || "",
           initialRawResponse: runResponse.initialRawResponse || "",
           retryRawResponse: runResponse.retryRawResponse || "",

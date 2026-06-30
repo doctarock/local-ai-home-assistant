@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  filterToolsByProfile,
+  isPluginHiddenByProfile,
+  resolveProfilePluginState
+} from "./lib/profile-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -142,6 +147,7 @@ export function createNovaPluginManager(context = {}) {
     runtimeRoot = "",
     fs = null,
     path = null,
+    profile = null,
     runtimeContext = {},
     validateAdminRequest = null
   } = context;
@@ -184,6 +190,7 @@ export function createNovaPluginManager(context = {}) {
   let sharedRuntimeContext = runtimeContext && typeof runtimeContext === "object"
     ? { ...runtimeContext }
     : {};
+  let activeProfile = profile && typeof profile === "object" ? profile : null;
 
   async function appendPluginAudit(event = {}) {
     if (!pluginAuditPath || !fs || typeof fs.appendFile !== "function" || !path) {
@@ -250,7 +257,20 @@ export function createNovaPluginManager(context = {}) {
       return false;
     }
     const explicit = pluginStateById.get(normalizedPluginId);
-    return explicit !== false;
+    return resolveProfilePluginState(activeProfile || {}, normalizedPluginId, explicit).enabled === true;
+  }
+
+  function pluginEnabledSource(pluginId = "") {
+    const normalizedPluginId = normalizePluginId(pluginId);
+    if (!normalizedPluginId) {
+      return "invalid";
+    }
+    return resolveProfilePluginState(activeProfile || {}, normalizedPluginId, pluginStateById.get(normalizedPluginId)).source;
+  }
+
+  function isPluginVisible(pluginId = "") {
+    const normalizedPluginId = normalizePluginId(pluginId);
+    return Boolean(normalizedPluginId && !isPluginHiddenByProfile(activeProfile || {}, normalizedPluginId));
   }
 
   function setPluginEnabled(pluginId = "", enabled = true) {
@@ -1358,7 +1378,7 @@ export function createNovaPluginManager(context = {}) {
   function buildPluginDescriptor(plugin = {}) {
     const capabilitiesForPlugin = listPluginCapabilities(plugin.id);
     const hooksForPlugin = listPluginHooks(plugin.id);
-    const toolsForPlugin = listPluginTools(plugin.id);
+    const toolsForPlugin = filterToolsByProfile(listPluginTools(plugin.id), activeProfile || {});
     const routesForPlugin = listPluginRoutes(plugin.id);
     const uiPanelsForPlugin = listPluginUiPanels(plugin.id);
     const uiNovaTabsForPlugin = listPluginUiNovaTabs(plugin.id);
@@ -1371,6 +1391,8 @@ export function createNovaPluginManager(context = {}) {
     return {
       id: plugin.id,
       enabled: isPluginEnabled(plugin.id),
+      enabledSource: pluginEnabledSource(plugin.id),
+      hiddenByProfile: !isPluginVisible(plugin.id),
       coreApiVersion: CORE_PLUGIN_API_VERSION,
       name: plugin.name,
       version: plugin.version,
@@ -1478,13 +1500,14 @@ export function createNovaPluginManager(context = {}) {
   function listPluginTools(pluginId = "") {
     const normalizedPluginId = normalizePluginId(pluginId);
     if (normalizedPluginId) {
-      return (tools.get(normalizedPluginId) || [])
+      return filterToolsByProfile((tools.get(normalizedPluginId) || [])
         .slice()
         .sort((left, right) => Number(left.order || 0) - Number(right.order || 0))
-        .map(({ order, ...tool }) => ({ ...tool }));
+        .map(({ order, ...tool }) => ({ ...tool })), activeProfile || {});
     }
     return activePlugins
       .filter((plugin) => isPluginEnabled(plugin.id))
+      .filter((plugin) => isPluginVisible(plugin.id))
       .flatMap((plugin) => listPluginTools(plugin.id));
   }
 
@@ -1808,6 +1831,10 @@ export function createNovaPluginManager(context = {}) {
     };
   }
 
+  function setActiveProfile(nextProfile = {}) {
+    activeProfile = nextProfile && typeof nextProfile === "object" ? nextProfile : null;
+  }
+
   async function initialize() {
     await loadPluginTrustPolicy();
     await loadPluginState();
@@ -2003,7 +2030,7 @@ export function createNovaPluginManager(context = {}) {
       res.json({
         ok: true,
         coreApiVersion: CORE_PLUGIN_API_VERSION,
-        plugins: activePlugins.map((plugin) => buildPluginDescriptor(plugin)),
+        plugins: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).map((plugin) => buildPluginDescriptor(plugin)),
         capabilities: [...capabilities.keys()].sort((left, right) => left.localeCompare(right)),
         capabilityProviders: Object.fromEntries(
           [...capabilities.entries()].map(([name, providers]) => [
@@ -2031,7 +2058,7 @@ export function createNovaPluginManager(context = {}) {
         hookRuntimeStats: Object.fromEntries(
           [...hookRuntimeStatsByName.entries()].map(([name, stats]) => [name, stats])
         ),
-        tools: activePlugins.flatMap((plugin) =>
+        tools: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginTools(plugin.id).map((tool) => ({
             ...tool,
             enabled: isPluginEnabled(plugin.id)
@@ -2042,34 +2069,34 @@ export function createNovaPluginManager(context = {}) {
           mode: pluginTrustPolicy.mode
         },
         failures: failedPlugins.slice(),
-        uiPanels: activePlugins.flatMap((plugin) =>
+        uiPanels: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginUiPanels(plugin.id).map((panel) => ({
             ...panel,
             pluginName: plugin.name
           }))
         ),
-        uiNovaTabs: activePlugins.flatMap((plugin) =>
+        uiNovaTabs: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginUiNovaTabs(plugin.id).map((tab) => ({
             ...tab,
             pluginName: plugin.name,
             enabled: isPluginEnabled(plugin.id)
           }))
         ),
-        uiSecretsTabs: activePlugins.flatMap((plugin) =>
+        uiSecretsTabs: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginUiSecretsTabs(plugin.id).map((tab) => ({
             ...tab,
             pluginName: plugin.name,
             enabled: isPluginEnabled(plugin.id)
           }))
         ),
-        uiSystemTabs: activePlugins.flatMap((plugin) =>
+        uiSystemTabs: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginUiSystemTabs(plugin.id).map((tab) => ({
             ...tab,
             pluginName: plugin.name,
             enabled: isPluginEnabled(plugin.id)
           }))
         ),
-        uiTabs: activePlugins.flatMap((plugin) =>
+        uiTabs: activePlugins.filter((plugin) => isPluginVisible(plugin.id)).flatMap((plugin) =>
           listPluginUiTabs(plugin.id).map((tab) => ({
             ...tab,
             pluginName: plugin.name,
@@ -2090,7 +2117,8 @@ export function createNovaPluginManager(context = {}) {
         pluginState: buildPluginStatePayload(),
         plugins: activePlugins.map((plugin) => ({
           id: plugin.id,
-          enabled: isPluginEnabled(plugin.id)
+          enabled: isPluginEnabled(plugin.id),
+          enabledSource: pluginEnabledSource(plugin.id)
         }))
       });
     });
@@ -2246,7 +2274,7 @@ export function createNovaPluginManager(context = {}) {
   }
 
   function listPlugins() {
-    return activePlugins.map((plugin) => buildPluginDescriptor(plugin));
+    return activePlugins.filter((plugin) => isPluginVisible(plugin.id)).map((plugin) => buildPluginDescriptor(plugin));
   }
 
   function listRegressionSuites(context = {}) {
@@ -2296,12 +2324,13 @@ export function createNovaPluginManager(context = {}) {
     getHookRuntimeStats: () => Object.fromEntries([...hookRuntimeStatsByName.entries()].map(([name, stats]) => [name, stats])),
     initialize,
     listCapabilityProviders,
-    listTools: () => listPluginTools(),
+    listTools: () => filterToolsByProfile(listPluginTools(), activeProfile || {}),
     listRegressionSuites,
     listPlugins,
     registerRoutes,
     runInternalRegressionCase,
     runHook,
+    setActiveProfile,
     setRuntimeContext,
     use
   };

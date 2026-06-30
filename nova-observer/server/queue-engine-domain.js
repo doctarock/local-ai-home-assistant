@@ -412,6 +412,17 @@ export function registerQueueEngineRoutes(context = {}) {
           ? `${createdTasks.length} queued tasks created from this request.`
           : "Queued task created from this request."
       });
+      if (createdTasks.length && typeof context.broadcastObserverEvent === "function") {
+        context.broadcastObserverEvent({
+          type: "intake.request_queued",
+          taskRefs: createdTasks
+            .map((task) => task?.codename || task?.id)
+            .filter(Boolean),
+          destinationLabel: requestedBrainId || "worker",
+          message,
+          source: sourceIdentity?.kind || "intake"
+        });
+      }
       res.json({ ok: true, task: createdTasks[0] || null, tasks: createdTasks, deduped: createdTasks.length === 1 && createdTasks[0]?.id !== undefined && plannedTasks.length === 0 && createdTasks[0]?.message === message });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });

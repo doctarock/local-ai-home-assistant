@@ -1,6 +1,9 @@
+import { profileAllowsTool } from "./lib/profile-manager.js";
+
 export function createToolConfigService({
   buildToolCatalog,
   compactTaskText,
+  getActiveProfile = () => ({}),
   normalizeToolName,
   sanitizeSkillSlug,
   readVolumeFile,
@@ -206,6 +209,9 @@ export function createToolConfigService({
   async function isToolApprovedForAutonomousUse(name = "") {
     const toolName = normalizeToolName(name);
     if (!toolName) {
+      return false;
+    }
+    if (!profileAllowsTool(getActiveProfile(), toolName)) {
       return false;
     }
     const state = await loadToolRegistryState();

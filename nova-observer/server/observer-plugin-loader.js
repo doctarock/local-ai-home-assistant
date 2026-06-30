@@ -36,6 +36,7 @@ export function createNoopPluginManager({ app = null, runtimeRoot = "", loadErro
     },
     runInternalRegressionCase: async () => null,
     runHook: async (_name = "", payload = undefined) => payload,
+    setActiveProfile: () => {},
     setRuntimeContext: () => {},
     use: () => {}
   };
@@ -276,6 +277,7 @@ export async function initializeObserverPluginManager(options = {}) {
     fs,
     getObserverConfig,
     pathModule,
+    profile = null,
     pluginRuntimeRoot,
     rootDir,
     runtimeContext,
@@ -301,6 +303,7 @@ export async function initializeObserverPluginManager(options = {}) {
         runtimeRoot: pluginRuntimeRoot,
         fs,
         path: pathModule,
+        profile,
         runtimeContext,
         validateAdminRequest
       });

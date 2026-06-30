@@ -1075,7 +1075,8 @@ export function createInternalRegressionRunner({
           stepDiagnostics: testCase.stepDiagnostics || null,
           lowValueStreak: Number(testCase.lowValueStreak || 0),
           requireConcreteConvergence: Boolean(testCase.requireConcreteConvergence),
-          mentionsSkillsOrToolbelt: Boolean(testCase.mentionsSkillsOrToolbelt)
+          mentionsSkillsOrToolbelt: Boolean(testCase.mentionsSkillsOrToolbelt),
+          availableToolNames: Array.isArray(testCase.availableToolNames) ? testCase.availableToolNames : []
         }
       );
       const failures = [];

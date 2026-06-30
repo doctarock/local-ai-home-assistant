@@ -49,11 +49,192 @@ async function pluginAdminFetch(url = "", options = {}) {
   const token = await getAdminUiToken();
   const headers = {
     ...(options?.headers && typeof options.headers === "object" ? options.headers : {}),
-    "x-admin-token": token
+    "x-admin-token": token,
+    "x-observer-client-session": uiSecurityClientSessionId
   };
-  return fetch(url, {
+  const response = await fetch(url, {
     ...options,
     headers
+  });
+  if (response.status === 423) {
+    await syncUiSecuritySession({ silent: true }).catch(() => {});
+  }
+  return response;
+}
+
+function isUiSecurityLocked() {
+  return uiSecuritySession?.lockEnabled === true && uiSecuritySession?.unlocked !== true;
+}
+
+function ensureUiSecurityOverlay() {
+  let overlay = document.getElementById("uiSecurityLockOverlay");
+  if (overlay) {
+    return overlay;
+  }
+  overlay = document.createElement("div");
+  overlay.id = "uiSecurityLockOverlay";
+  overlay.className = "ui-security-lock";
+  overlay.innerHTML = `
+    <div class="ui-security-lock-panel">
+      <div class="metric-label">Locked</div>
+      <div class="ui-security-lock-title">Voice unlock required</div>
+      <div class="micro" id="uiSecurityLockDetail">Enable voice and say ${escapeHtml(getUnlockPhrase())}.</div>
+    </div>
+  `;
+  panelDrawerEl?.appendChild(overlay);
+  return overlay;
+}
+
+function renderUiSecuritySession() {
+  const lockEnabled = uiSecuritySession?.lockEnabled === true;
+  const locked = isUiSecurityLocked();
+  document.body.classList.toggle("ui-security-enabled", lockEnabled);
+  document.body.classList.toggle("ui-security-locked", locked);
+  panelDrawerEl?.classList.toggle("locked", locked);
+  const overlay = ensureUiSecurityOverlay();
+  overlay.hidden = !locked;
+  const detailEl = overlay.querySelector("#uiSecurityLockDetail");
+  if (detailEl) {
+    detailEl.textContent = lockEnabled
+      ? `Say ${getUnlockPhrase()} with a trusted voice. ${uiSecuritySession.voiceProfileCount || 0} voice profile${Number(uiSecuritySession.voiceProfileCount || 0) === 1 ? "" : "s"} active.`
+      : "No voice profile is recorded, so the panel lock is disabled.";
+  }
+  if (runBtn) {
+    runBtn.disabled = locked || runInFlight;
+    runBtn.title = locked ? "Unlock with a trusted voice command first" : "";
+  }
+  if (hintEl && locked) {
+    hintEl.textContent = "Observer is locked. Voice commands can unlock the UI; protected server actions are blocked until then.";
+  }
+}
+
+function scheduleUiSecurityRelock() {
+  if (uiSecurityRelockTimer) {
+    window.clearTimeout(uiSecurityRelockTimer);
+    uiSecurityRelockTimer = null;
+  }
+  if (uiSecuritySession?.lockEnabled !== true || uiSecuritySession?.unlocked !== true) {
+    return;
+  }
+  const inactivityMs = Math.max(60_000, Number(uiSecuritySession.inactivityMs || 30 * 60 * 1000));
+  const elapsed = Math.max(0, Date.now() - Number(uiSecurityLastActivityAt || 0));
+  const delay = Math.max(1000, inactivityMs - elapsed);
+  uiSecurityRelockTimer = window.setTimeout(() => {
+    relockUiSecuritySession("inactive").catch(() => {});
+  }, delay);
+}
+
+function noteUiSecurityActivity() {
+  uiSecurityLastActivityAt = Date.now();
+  scheduleUiSecurityRelock();
+}
+
+async function syncUiSecuritySession(options = {}) {
+  const token = await getAdminUiToken();
+  const response = await fetch("/api/security/session", {
+    headers: {
+      "x-admin-token": token,
+      "x-observer-client-session": uiSecurityClientSessionId
+    }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "security session unavailable");
+  }
+  uiSecuritySession = payload.session || uiSecuritySession;
+  if (
+    uiSecuritySession?.lockEnabled === true
+    && uiSecuritySession?.unlocked !== true
+    && uiSecuritySession?.recoveryUnlockAvailable === true
+  ) {
+    return await claimUiSecurityServerUnlock();
+  }
+  uiSecurityLastActivityAt = Number(uiSecuritySession.lastActivityAt || uiSecuritySession.unlockedAt || Date.now()) || Date.now();
+  renderUiSecuritySession();
+  scheduleUiSecurityRelock();
+  if (!options.silent && hintEl && isUiSecurityLocked()) {
+    hintEl.textContent = "Observer is locked. Say the voice unlock command to continue.";
+  }
+  return uiSecuritySession;
+}
+
+async function claimUiSecurityServerUnlock() {
+  const response = await pluginAdminFetch("/api/security/claim-server-unlock", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "server recovery unlock claim failed");
+  }
+  uiSecuritySession = payload.session || uiSecuritySession;
+  uiSecurityLastActivityAt = Date.now();
+  renderUiSecuritySession();
+  scheduleUiSecurityRelock();
+  if (hintEl) {
+    hintEl.textContent = "Observer unlocked by server recovery.";
+  }
+  return uiSecuritySession;
+}
+
+async function unlockUiSecuritySessionWithVoice(sourceIdentity = null) {
+  if (uiSecuritySession?.lockEnabled !== true) {
+    return uiSecuritySession;
+  }
+  const response = await pluginAdminFetch("/api/security/unlock", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sourceIdentity })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "voice unlock failed");
+  }
+  uiSecuritySession = payload.session || uiSecuritySession;
+  uiSecurityLastActivityAt = Date.now();
+  renderUiSecuritySession();
+  scheduleUiSecurityRelock();
+  if (hintEl) {
+    hintEl.textContent = "Observer unlocked by trusted voice.";
+  }
+  window.dispatchEvent(new CustomEvent("observer:ui-security-unlocked", {
+    detail: {
+      by: "voice",
+      session: uiSecuritySession,
+      sourceIdentity,
+      at: Date.now()
+    }
+  }));
+  return uiSecuritySession;
+}
+
+async function relockUiSecuritySession(reason = "manual") {
+  const response = await pluginAdminFetch("/api/security/relock", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "lock failed");
+  }
+  uiSecuritySession = payload.session || uiSecuritySession;
+  renderUiSecuritySession();
+  scheduleUiSecurityRelock();
+  if (hintEl) {
+    hintEl.textContent = reason === "inactive" ? "Observer locked after inactivity." : "Observer locked.";
+  }
+  return uiSecuritySession;
+}
+
+function bindUiSecurityActivityListeners() {
+  ["pointerdown", "keydown", "input"].forEach((eventName) => {
+    window.addEventListener(eventName, () => {
+      if (!isUiSecurityLocked()) {
+        noteUiSecurityActivity();
+      }
+    }, { passive: true });
   });
 }
 
@@ -84,7 +265,11 @@ async function resetToSimpleProjectState() {
     const tokenJson = await tokenRes.json();
     const r = await fetch("/api/state/reset-simple-project", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-admin-token": tokenJson.token || "" }
+      headers: {
+        "content-type": "application/json",
+        "x-admin-token": tokenJson.token || "",
+        "x-observer-client-session": uiSecurityClientSessionId
+      }
     });
     const j = await r.json();
     if (!r.ok || !j.ok) {
@@ -827,7 +1012,7 @@ function replayWaitingQuestionThroughAvatar() {
 
 function buildVoiceQuestionInvitation(task = {}) {
   const taskRef = String(task.codename || formatEntityRef("task", task.id || "unknown")).trim();
-  const botName = getBotName();
+  const botName = getWakeDisplayName();
   const variants = [
     `I have a question about ${taskRef}. Do you have a moment? Say yes ${botName} and I'll ask it.`,
     `Quick check in. I have a question waiting for ${taskRef}. If now works, say yes ${botName}.`,
@@ -1455,6 +1640,24 @@ function reportTaskEvent(task, explicitTitle = "", options = {}) {
   }
 }
 
+function reportQueuedRequestEvent(detail = {}) {
+  const tasks = Array.isArray(detail?.tasks) ? detail.tasks : [];
+  const taskRefs = Array.isArray(detail?.taskRefs)
+    ? detail.taskRefs.map((value) => String(value || "").trim()).filter(Boolean)
+    : tasks.map((task) => String(task?.codename || formatEntityRef("task", task?.id || "unknown")).trim()).filter(Boolean);
+  window.dispatchEvent(new CustomEvent("observer:event", {
+    detail: {
+      type: "intake.request_queued",
+      at: Date.now(),
+      taskRefs,
+      taskRef: taskRefs[0] || "",
+      destinationLabel: String(detail?.destinationLabel || "worker").trim() || "worker",
+      message: String(detail?.message || "").trim(),
+      source: String(detail?.source || "intake").trim() || "intake"
+    }
+  }));
+}
+
 function syncInProgressTaskUpdates(tasks) {
   if (isRemoteParallelMode()) {
     return;
@@ -1587,6 +1790,9 @@ async function refreshStatus() {
           Number(entry.failedCount || 0) ? `${entry.failedCount} failed` : ""
         ].filter(Boolean).join(" | ") || "No assigned work";
         const idleText = Number(entry.idleForMs || 0) ? `${formatDurationMs(entry.idleForMs)} idle` : "No recent activity";
+        const avgText = Number(entry.avgRequestMs || 0)
+          ? `Avg: ${formatDurationMs(entry.avgRequestMs)} / req (n=${entry.avgRequestSampleCount || 0})`
+          : "";
         const laneLabel = lane || "-";
         const laneSharingText = !lane || !sameLanePeers.length
           ? "Dedicated lane"
@@ -1608,6 +1814,7 @@ async function refreshStatus() {
             <div class="micro">${escapeHtml(queueBits)}</div>
             <div class="micro lane-status-line">${escapeHtml(laneStatusText)}</div>
             <div class="micro">${escapeHtml(idleText)}</div>
+            ${avgText ? `<div class="micro">${escapeHtml(avgText)}</div>` : ""}
           </article>
         `;
       }).join("");
@@ -1635,20 +1842,93 @@ async function loadRuntimeOptions() {
     const j = await r.json();
     runtimeOptions = j;
     observerApp.applyAppConfigToStage?.(runtimeOptions?.app || {});
+    applyProfileUi(runtimeOptions?.profile || {});
     window.dispatchEvent(new CustomEvent("observer:app-config", { detail: runtimeOptions.app || {} }));
     updateVoiceUi();
     populateBrainOptions();
     loadSavedAccessSettings();
     updateAccessSummary();
     updateQueueControlUi();
+    await syncUiSecuritySession({ silent: true });
   } catch (error) {
     hintEl.textContent = `Failed to load runtime options: ${error.message}`;
+  }
+}
+
+function normalizeProfileTabId(value = "") {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.endsWith("Tab") || normalized.endsWith("Panel")) {
+    return normalized;
+  }
+  return `${normalized}Tab`;
+}
+
+function setElementHidden(element, hidden = false) {
+  if (!element) {
+    return;
+  }
+  element.hidden = hidden === true;
+  element.classList.toggle("profile-hidden", hidden === true);
+}
+
+function applyProfileUi(profile = {}) {
+  const ui = profile?.ui && typeof profile.ui === "object" ? profile.ui : {};
+  const hiddenTabs = Array.isArray(ui.hiddenTabs) ? ui.hiddenTabs.map((entry) => String(entry || "").trim()).filter(Boolean) : [];
+  const hidden = new Set(hiddenTabs.map((entry) => entry.toLowerCase()));
+  const topLevelTargets = new Map([
+    ["queue", "queueTab"],
+    ["nova", "novaTab"],
+    ["avatar", "novaTab"],
+    ["brains", "brainsTab"],
+    ["secrets", "secretsTab"],
+    ["tools", "toolsTab"],
+    ["plugins", "pluginsTab"],
+    ["system", "systemTab"],
+    ["home", "systemTab"]
+  ]);
+  for (const [key, tabId] of topLevelTargets.entries()) {
+    if (!hidden.has(key)) {
+      continue;
+    }
+    setElementHidden(document.querySelector(`[data-tab-target="${tabId}"]`), true);
+    setElementHidden(document.getElementById(tabId), true);
+  }
+  if (hidden.has("trust")) {
+    setElementHidden(document.querySelector('[data-nova-subtab-target="novaTrustPanel"]'), true);
+    setElementHidden(document.getElementById("novaTrustPanel"), true);
+  }
+  if (hidden.has("voice")) {
+    setElementHidden(voiceToggleBtn, true);
+    setElementHidden(voiceStatusEl, true);
+    setElementHidden(voiceMetaEl, true);
+    setElementHidden(voiceTrustEl, true);
+  }
+  const requestedDefault = normalizeProfileTabId(ui.defaultTab || "queue");
+  const defaultTabId = document.getElementById(requestedDefault) && !document.getElementById(requestedDefault).hidden
+    ? requestedDefault
+    : "queueTab";
+  const activePanel = document.querySelector(".tab-panel.active");
+  if (!activePanel || activePanel.hidden || activePanel.id === "novaTab") {
+    observerApp.activateTab?.(defaultTabId);
+  }
+  if (hidden.has("trust") && activeNovaSubtabId === "novaTrustPanel") {
+    observerApp.activateNovaSubtab?.("novaIdentityPanel");
   }
 }
 
 Object.assign(observerApp, {
   getAdminUiToken,
   adminFetch: pluginAdminFetch,
+  syncUiSecuritySession,
+  claimUiSecurityServerUnlock,
+  unlockUiSecuritySessionWithVoice,
+  relockUiSecuritySession,
+  isUiSecurityLocked,
+  noteUiSecurityActivity,
+  bindUiSecurityActivityListeners,
   loadTaskQueue,
   loadTaskReshapeIssues,
   registerPluginEventHandler: (prefix, handler) => { pluginEventHandlers.set(String(prefix), handler); },
@@ -1671,6 +1951,7 @@ Object.assign(observerApp, {
   pickTaskPhrase,
   buildTaskNarration,
   isRemoteParallelMode,
+  reportQueuedRequestEvent,
   reportTaskEvent,
   syncInProgressTaskUpdates,
   pollTaskEvents,
@@ -1678,6 +1959,7 @@ Object.assign(observerApp, {
   installUploadedPluginPackage,
   refreshStatus,
   loadRuntimeOptions,
+  applyProfileUi,
   setQueuePaused
 });
 
@@ -1695,15 +1977,16 @@ es.onerror = () => {
 const observerEvents = new EventSource("/events/observer");
 observerEvents.onmessage = (ev) => {
   const data = JSON.parse(ev.data);
-  const eventSeq = Number(data.eventSeq || data.task?.latestEventSeq || 0);
+  if (data.type === "observer.connected") {
+    latestObserverEventSeq = 0;
+    return;
+  }
+  const eventSeq = Number(data.eventSeq || 0);
   if (eventSeq > 0) {
     if (eventSeq <= latestObserverEventSeq) {
       return;
     }
     latestObserverEventSeq = eventSeq;
-  }
-  if (data.type === "observer.connected") {
-    return;
   }
   if (typeof data.type === "string" && !data.task) {
     window.dispatchEvent(new CustomEvent("observer:event", { detail: data }));

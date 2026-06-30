@@ -20,6 +20,14 @@
       "windowFrame": ""
     },
     "propSlots": {
+      "backWallLeft": {
+        "model": "",
+        "scale": 1
+      },
+      "backWallRight": {
+        "model": "",
+        "scale": 1
+      },
       "wallLeft": {
         "model": "",
         "scale": 2.15
@@ -55,6 +63,7 @@
       "Sonia",
       "Hazel"
     ],
+    "quietMode": false,
     "trust": {
       "emailCommandMinLevel": "trusted",
       "voiceCommandMinLevel": "trusted",
@@ -76,6 +85,7 @@
           "label": "Trusted Contact",
           "email": "contact@example.com",
           "aliases": [],
+          "phoneNumbers": [],
           "trustLevel": "trusted",
           "threshold": 0.82,
           "signature": [],
@@ -102,6 +112,7 @@
           "notes": ""
         }
       ],
+      "phoneSources": [],
       "voiceProfiles": []
     }
   },
@@ -117,11 +128,7 @@
       "creative_worker",
       "vision_worker",
       "retrieval_worker",
-      "lappy_gpu_big",
-      "code_worker",
-      "lan_73_p4",
-      "lap_planner",
-      "remote_cpu"
+      "code_worker"
     ],
     "builtIn": [
       {
@@ -140,35 +147,16 @@
     "endpoints": {
       "local": {
         "label": "Local Ollama",
+        "provider": "ollama",
         "baseUrl": "http://127.0.0.1:11434"
       }
     },
     "assignments": {
       "intake": "local",
       "worker": "local",
-      "helper": "local",
-      "remote_cpu": "lan_73",
-      "creative_worker": "lan_73",
-      "code_worker": "lan_73",
-      "vision_worker": "lan_73",
-      "retrieval_worker": "lan_73",
-      "lappy_gpu_big": "lappy",
-      "lan_73_p4": "lan_73_p4",
-      "lap_planner": "lappy_cpu"
+      "helper": "local"
     },
     "custom": [
-      {
-        "id": "remote_cpu",
-        "label": "Remote Planner",
-        "kind": "helper",
-        "model": "qwen3.5:4b",
-        "endpointId": "lan_73",
-        "queueLane": "lan_73_cpu",
-        "specialty": "routing",
-        "toolCapable": false,
-        "cronCapable": false,
-        "description": "Remote CPU planner for triage, specialist selection, and completion review"
-      }
     ]
   },
   "queue": {

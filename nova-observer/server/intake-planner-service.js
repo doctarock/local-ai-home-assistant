@@ -47,9 +47,7 @@ export function createIntakePlannerService({
       const result = await runOllamaJsonGenerate(intakeBrain.model, `${systemPrompt}${toolHistory}\n\nUser message:\n${message}`, {
         timeoutMs: intakePlanTimeoutMs,
         keepAlive: modelKeepAlive,
-        options: {
-          num_gpu: 0
-        },
+        options: intakeBrain.numGpu != null ? { num_gpu: intakeBrain.numGpu } : undefined,
         baseUrl: intakeBrain.ollamaBaseUrl,
         brainId: intakeBrain.id,
         leaseOwnerId: `intake:${String(sessionId || "Main").trim() || "Main"}`,

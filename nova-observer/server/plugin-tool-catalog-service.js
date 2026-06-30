@@ -1,5 +1,8 @@
+import { filterToolsByProfile, profileAllowsTool } from "./lib/profile-manager.js";
+
 export function createPluginToolCatalogService({
   buildObserverToolCatalog,
+  getActiveProfile = () => ({}),
   getPluginManager,
   getWorkerTools,
   intakeTools
@@ -33,10 +36,10 @@ export function createPluginToolCatalogService({
     }
     const normalizedScope = String(scope || "").trim().toLowerCase();
     const tools = Array.isArray(pluginToolCatalogCache) ? pluginToolCatalogCache.slice() : [];
-    if (!normalizedScope) {
-      return tools;
-    }
-    return tools.filter((entry) => Array.isArray(entry.scopes) && entry.scopes.includes(normalizedScope));
+    const scopedTools = normalizedScope
+      ? tools.filter((entry) => Array.isArray(entry.scopes) && entry.scopes.includes(normalizedScope))
+      : tools;
+    return filterToolsByProfile(scopedTools, getActiveProfile());
   }
 
   async function refreshPluginToolCatalogCache() {
@@ -62,6 +65,9 @@ export function createPluginToolCatalogService({
   }
 
   async function executePluginIntakeToolCall({ name = "", args = {}, toolCall = null, normalized = null } = {}) {
+    if (!profileAllowsTool(getActiveProfile(), name)) {
+      throw new Error(`tool ${String(name || "").trim()} is disabled by the active profile`);
+    }
     const pluginManager = getPluginManager?.();
     if (!pluginManager || typeof pluginManager.runHook !== "function") {
       return null;
@@ -86,10 +92,10 @@ export function createPluginToolCatalogService({
     const configuredIntakeTools = Array.isArray(intakeTools) ? intakeTools : [];
     const pluginWorkerTools = collectPluginToolsSync("worker");
     const pluginIntakeTools = collectPluginToolsSync("intake");
-    return buildObserverToolCatalog({
+    return filterToolsByProfile(buildObserverToolCatalog({
       workerTools: [...workerTools, ...pluginWorkerTools],
       intakeTools: [...configuredIntakeTools, ...pluginIntakeTools]
-    });
+    }), getActiveProfile());
   }
 
   return {

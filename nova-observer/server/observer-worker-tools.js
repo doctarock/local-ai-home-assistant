@@ -12,6 +12,7 @@ export function createObserverWorkerTools(options = {}) {
     ensureAutonomousToolApproved = async () => {},
     ensureVolumeFile = async () => {},
     formatDayKey = (value = Date.now()) => new Date(value).toISOString().slice(0, 10),
+    getCurrentTimeMs = () => Date.now(),
     fs = null,
     getPluginManager = () => null,
     inspectSkillLibrarySkill = async () => null,
@@ -50,6 +51,7 @@ function getToolPathArg(args = {}, { defaultPath = "" } = {}) {
     source.path
     || source.target
     || source.filePath
+    || source.file_path
     || source.filepath
     || source.file
     || source.filename
@@ -157,12 +159,23 @@ async function writeContainerBinaryFile(targetPath, base64Buffer) {
 
 function normalizeEditToolArgs(args = {}) {
   const source = args && typeof args === "object" ? args : {};
+  const hasContent = Object.prototype.hasOwnProperty.call(source, "content")
+    || Object.prototype.hasOwnProperty.call(source, "fullContent")
+    || Object.prototype.hasOwnProperty.call(source, "full_content");
+  let content = "";
+  if (Object.prototype.hasOwnProperty.call(source, "content")) {
+    content = String(source.content ?? "");
+  } else if (Object.prototype.hasOwnProperty.call(source, "fullContent")) {
+    content = String(source.fullContent ?? "");
+  } else if (Object.prototype.hasOwnProperty.call(source, "full_content")) {
+    content = String(source.full_content ?? "");
+  }
   const edits = Array.isArray(source.edits) && source.edits.length
     ? source.edits
     : (Array.isArray(source.replacements) ? source.replacements : []);
   const normalizedEdits = edits.map((entry) => ({
-    oldText: String(entry?.oldText ?? entry?.old ?? entry?.find ?? ""),
-    newText: String(entry?.newText ?? entry?.new ?? entry?.replace ?? ""),
+    oldText: String(entry?.oldText ?? entry?.old_text ?? entry?.old ?? entry?.find ?? entry?.search ?? ""),
+    newText: String(entry?.newText ?? entry?.new_text ?? entry?.new ?? entry?.replace ?? entry?.replacement ?? ""),
     replaceAll: entry?.replaceAll === true || entry?.replace_all === true,
     expectedReplacements: entry?.expectedReplacements == null
       ? (entry?.expected_replacements == null ? null : Number(entry.expected_replacements))
@@ -170,15 +183,10 @@ function normalizeEditToolArgs(args = {}) {
   })).filter((entry) => entry.oldText);
   return {
     edits: normalizedEdits,
-    oldText: String(source.oldText ?? source.old ?? source.find ?? ""),
-    newText: String(source.newText ?? source.new ?? source.replace ?? ""),
-    hasContent: Object.prototype.hasOwnProperty.call(source, "content")
-      || Object.prototype.hasOwnProperty.call(source, "fullContent"),
-    content: Object.prototype.hasOwnProperty.call(source, "content")
-      ? String(source.content ?? "")
-      : (Object.prototype.hasOwnProperty.call(source, "fullContent")
-        ? String(source.fullContent ?? "")
-        : ""),
+    oldText: String(source.oldText ?? source.old_text ?? source.old ?? source.find ?? source.search ?? ""),
+    newText: String(source.newText ?? source.new_text ?? source.new ?? source.replace ?? source.replacement ?? ""),
+    hasContent,
+    content,
     replaceAll: source.replaceAll === true || source.replace_all === true,
     expectedReplacements: source.expectedReplacements == null
       ? (source.expected_replacements == null ? null : Number(source.expected_replacements))
@@ -221,8 +229,8 @@ async function toolEditFile(args = {}) {
 }
 
 async function toolMovePath(args = {}) {
-  const from = resolveToolPath(args.fromPath || args.from);
-  const to = resolveToolPath(args.toPath || args.to);
+  const from = resolveToolPath(args.fromPath || args.from_path || args.from || args.source || args.src || args.path);
+  const to = resolveToolPath(args.toPath || args.to_path || args.to || args.destination || args.dest || args.target);
   if (workspaceTransactions && typeof workspaceTransactions.transactMovePath === "function") {
     return workspaceTransactions.transactMovePath({ ...args, from, to }, args.__context || {});
   }
@@ -242,12 +250,19 @@ async function toolShellCommand(args = {}) {
   });
 }
 
-function normalizeDailyPersonalNotesDate(value = "") {
+function normalizeDailyPersonalNotesDate(value = "", now = getCurrentTimeMs()) {
   const raw = String(value || "").trim();
+  const todayKey = formatDayKey(now);
   if (!raw) {
-    return formatDayKey(Date.now());
+    return { dayKey: todayKey, requestedDayKey: "", adjusted: false };
   }
-  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return { dayKey: "", requestedDayKey: raw, adjusted: false };
+  }
+  if (raw > todayKey) {
+    return { dayKey: todayKey, requestedDayKey: raw, adjusted: true };
+  }
+  return { dayKey: raw, requestedDayKey: raw, adjusted: false };
 }
 
 function renderDailyPersonalNotesTemplate(dayKey = "") {
@@ -260,7 +275,8 @@ function renderDailyPersonalNotesTemplate(dayKey = "") {
 }
 
 async function toolUpdateDailyPersonalNotes(args = {}) {
-  const dayKey = normalizeDailyPersonalNotesDate(args.date || args.dayKey || args.day);
+  const dateSelection = normalizeDailyPersonalNotesDate(args.date || args.dayKey || args.day);
+  const dayKey = dateSelection.dayKey;
   if (!dayKey) {
     throw new Error("date must be in YYYY-MM-DD format");
   }
@@ -284,6 +300,8 @@ async function toolUpdateDailyPersonalNotes(args = {}) {
   return {
     ok: true,
     date: dayKey,
+    requestedDate: dateSelection.requestedDayKey,
+    dateAdjusted: dateSelection.adjusted,
     mode,
     filePath
   };

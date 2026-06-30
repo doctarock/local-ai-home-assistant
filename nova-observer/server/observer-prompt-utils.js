@@ -154,9 +154,11 @@ export function createObserverPromptUtils(context = {}) {
     stepDiagnostics = null,
     lowValueStreak = 0,
     requireConcreteConvergence = false,
-    mentionsSkillsOrToolbelt = false
+    mentionsSkillsOrToolbelt = false,
+    availableToolNames = []
   } = {}) {
     const successfulResults = (Array.isArray(toolResults) ? toolResults : []).filter((entry) => entry?.ok);
+    const failedResults = (Array.isArray(toolResults) ? toolResults : []).filter((entry) => !entry?.ok);
     const emptyReadTargets = successfulResults
       .filter((entry) => {
         const toolName = String(entry?.name || "").trim().toLowerCase();
@@ -185,6 +187,9 @@ export function createObserverPromptUtils(context = {}) {
         || ""
       ).trim())
       .filter(Boolean);
+    const visibleActionToolNames = [...new Set((Array.isArray(availableToolNames) ? availableToolNames : [])
+      .map((name) => String(name || "").trim())
+      .filter((name) => ["edit_file", "write_file", "move_path", "shell_command", "export_pdf", "zip", "unzip", "wordpress_upsert_post", "send_mail", "move_mail", "update_daily_personal_notes"].includes(name)))];
     const lines = [
       "Use the observer tool results above to decide the next assistant action.",
       "Those results came from your previous tool calls and are not a user request.",
@@ -209,15 +214,39 @@ export function createObserverPromptUtils(context = {}) {
       lines.push("If the last tools failed, adjust the tool plan instead of repeating the same failing call.");
       lines.push("If the failure means the needed capability is missing from the available tools, do not end with a refusal. Search the skill library, inspect the best fit, and record request_skill_installation or request_tool_addition.");
     }
+    if (failedResults.length) {
+      const compactFailures = failedResults.slice(0, 3).map((entry) => {
+        const toolName = String(entry?.name || "tool").trim() || "tool";
+        const error = compactTaskText(String(entry?.error || entry?.result?.error || "failed").replace(/\s+/g, " ").trim(), 180);
+        return `${toolName}: ${error}`;
+      }).filter(Boolean);
+      if (compactFailures.length) {
+        lines.push(`Failed tool feedback: ${compactFailures.join(" | ")}.`);
+      }
+      const failureText = failedResults.map((entry) => String(entry?.error || entry?.result?.error || "")).join(" ").toLowerCase();
+      if (/\bpath is required\b|\bmissing path\b|\bpath field\b/.test(failureText)) {
+        lines.push("Repair the failed call by retrying the same intended tool with the explicit full path in the path field or an accepted path alias; do not switch to broad inspection just to recover the path.");
+      }
+      if (/\bcontent (?:must be non-empty|is required)\b|\bempty content\b/.test(failureText)) {
+        lines.push("Repair the failed write/edit call by providing non-empty content or a valid oldText/newText replacement; do not call the write/edit tool with placeholder or blank content.");
+      }
+      if (/\bpermission requires user approval\b|\bapproval required\b/.test(failureText)) {
+        lines.push("If approval is required, ask one focused QUESTION FOR USER or use a capability/request path; do not keep retrying the same blocked call.");
+      }
+    }
     if (stepDiagnostics?.progressKind === "inspection_repeat") {
       lines.push("The last step only repeated prior inspection and did not create a file change, artifact, capability request, or new concrete inspection target.");
     } else if (stepDiagnostics?.progressKind === "exploration") {
       lines.push("The last step added exploration only. Use that information to move into an edit, validation, capability request, or a no-change conclusion instead of broadening inspection again.");
     }
     if (requireConcreteConvergence && Number(lowValueStreak || 0) >= 2) {
-      lines.push("You have spent multiple tool steps without concrete convergence. The next step must either change files, produce an artifact, use request_skill_installation/request_tool_addition, search the skill library for the missing capability, or conclude with the exact phrase 'no change is possible' and the inspected paths.");
-      lines.push("If a repo change is now clear, use edit_file for targeted text changes, write_file for new or fully rewritten files, or move_path for renames instead of another read-only inspection step.");
-      lines.push("When you use read_document, list_files, write_file, or edit_file, include the explicit full path in the path field on every call.");
+      lines.push("Checkpoint: you are leaving inspection mode. The next step must either change files, produce an artifact, use a capability-request tool, search the skill library for the missing capability, or conclude with the exact phrase 'no change is possible' and the inspected paths.");
+      lines.push("If a repo change is now clear, use an available edit, write, move, or validation tool instead of another read-only inspection step.");
+      if (visibleActionToolNames.length) {
+        lines.push(`Visible action/validation tools for the next move: ${visibleActionToolNames.join(", ")}.`);
+      }
+      lines.push("Do not call another read-only tool unless you name the specific missing fact that blocks action; if you cannot name that fact, act, request capability recovery, ask one focused QUESTION FOR USER, or finish with the required no-change wording.");
+      lines.push("When you use a file or directory tool, include the explicit full path in the path field on every call.");
     } else if (mentionsSkillsOrToolbelt && Number(lowValueStreak || 0) >= 1) {
       lines.push("If the blocker is a missing capability, prefer search_skill_library, inspect_skill_library, request_skill_installation, or request_tool_addition over more broad inspection.");
     }

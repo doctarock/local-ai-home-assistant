@@ -54,6 +54,9 @@ export function createToolLoopDiagnosticsHelpers({
     if (normalizedName === "web_fetch") {
       return result.ok !== false && Number(result.status || 200) < 400;
     }
+    if (result.ok === false) {
+      return false;
+    }
     return true;
   }
 
@@ -140,6 +143,12 @@ export function createToolLoopDiagnosticsHelpers({
     const toolNames = normalizedResults.map((entry) => normalizeToolName(entry?.name || "")).filter(Boolean);
     const skillDiscoveryCount = toolNames.filter((name) => ["search_skill_library", "inspect_skill_library", "list_installed_skills"].includes(name)).length;
     const toolRequestCount = toolNames.filter((name) => ["request_skill_installation", "request_tool_addition"].includes(name)).length;
+    const passiveInspectionTools = ["list_files", "read_document", "read_file", "shell_command", "web_fetch", "summarize"];
+    const actionToolCount = normalizedResults
+      .filter((entry) => entry?.ok)
+      .map((entry) => normalizeToolName(entry?.name || ""))
+      .filter((name) => name && !passiveInspectionTools.includes(name) && !["search_skill_library", "inspect_skill_library", "list_installed_skills", "request_skill_installation", "request_tool_addition"].includes(name))
+      .length;
     const concreteChangeCount = (Array.isArray(changedWorkspaceFiles) ? changedWorkspaceFiles.length : 0)
       + (Array.isArray(changedOutputFiles) ? changedOutputFiles.length : 0);
     const inspectionOnly = semanticSuccessCount > 0
@@ -147,7 +156,7 @@ export function createToolLoopDiagnosticsHelpers({
       && skillDiscoveryCount === 0
       && toolRequestCount === 0
       && toolNames.length > 0
-      && toolNames.every((name) => ["list_files", "read_document", "read_file", "shell_command", "web_fetch"].includes(name));
+      && toolNames.every((name) => passiveInspectionTools.includes(name));
     let progressKind = "none";
     if (concreteChangeCount > 0) {
       progressKind = "concrete";
@@ -155,6 +164,8 @@ export function createToolLoopDiagnosticsHelpers({
       progressKind = "capability_request";
     } else if (skillDiscoveryCount > 0) {
       progressKind = "skill_discovery";
+    } else if (actionToolCount > 0) {
+      progressKind = "concrete_action";
     } else if ((Array.isArray(newConcreteInspectionTargets) ? newConcreteInspectionTargets.length : 0) > 0) {
       progressKind = "concrete_inspection";
     } else if ((Array.isArray(newInspectionTargets) ? newInspectionTargets.length : 0) > 0) {
@@ -162,7 +173,7 @@ export function createToolLoopDiagnosticsHelpers({
     } else if (semanticSuccessCount > 0) {
       progressKind = "inspection_repeat";
     }
-    const concreteProgress = ["concrete", "capability_request", "skill_discovery", "concrete_inspection"].includes(progressKind);
+    const concreteProgress = ["concrete", "capability_request", "skill_discovery", "concrete_action", "concrete_inspection"].includes(progressKind);
     return {
       step: Number(step || 0),
       progressKind,
