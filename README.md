@@ -9,6 +9,8 @@
 
 ## Plugins
 
+- https://github.com/doctarock/Sprite-Plugin-for-Home-Assistant
+- https://github.com/doctarock/Multilingual-Recognition-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Governance-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Code-Review-Plugin-for-Home-Assistant
 - https://github.com/doctarock/Auto-plan-Plugin-for-Home-Assistant
