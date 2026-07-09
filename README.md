@@ -4,6 +4,7 @@
 
 - [Installation](docs/INSTALLATION.md)
 - [Plugin System Developer Guide](docs/PLUGIN-SYSTEM.md)
+- [API Reference](docs/API.md)
 - [Changelog](CHANGELOG.md)
 
 
@@ -199,6 +200,8 @@ Trust system supports:
 - Unified trust records with optional voice signature thresholds
 
 ## 9. API Surface Summary (Grouped)
+
+See [docs/API.md](docs/API.md) for the full endpoint-by-endpoint reference (methods, auth, request/response shapes).
 
 Primary route groups:
 - Runtime: `/api/runtime/*`, `/events/*`
