@@ -116,6 +116,7 @@ import { createObserverConfigSecretsDomain } from "./server/observer-config-secr
 import { createObserverDocumentDomain } from "./server/observer-document-domain.js";
 import { createObserverFailureDomain } from "./server/observer-failure-domain.js";
 import { createObserverOpportunityDomain } from "./server/observer-opportunity-domain.js";
+import { createObserverAvatarSceneDomain } from "./server/observer-avatar-scene-domain.js";
 import { createObserverRuntimeSupport } from "./server/observer-runtime-support.js";
 import { createObserverTaskStorage } from "./server/observer-task-storage.js";
 import { createObserverTaskStorageIo } from "./server/observer-task-storage-io.js";
@@ -200,6 +201,7 @@ app.use(express.json({ limit: "12mb" }));
 app.use(requestTrackingMiddleware);
 app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "three")));
 app.use("/vendor/fonts", express.static(path.join(__dirname, "node_modules", "@fontsource")));
+app.use("/observer-compat", express.static(path.join(__dirname, "observer-compat")));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/profile", async (_req, res) => {
@@ -753,6 +755,22 @@ const {
   broadcast,
   broadcastObserverEvent,
   setBroadcastSeqFloor,
+  scheduleTaskDispatch
+} = createObserverRuntimeSupport({
+  clients,
+  compactHookText,
+  getObserverConfig: () => observerConfig,
+  getPluginManager: () => pluginManager,
+  getTaskDispatchScheduled: () => taskDispatchScheduled,
+  observerEventClients,
+  processQueuedTasksToCapacity: (...args) => processQueuedTasksToCapacity(...args),
+  recoverStaleTaskDispatchLock: (...args) => recoverStaleTaskDispatchLock(...args),
+  sanitizeHookToken,
+  setTaskDispatchScheduled: (value) => {
+    taskDispatchScheduled = value === true;
+  }
+});
+const {
   defaultAppPropSlots,
   defaultAppReactionPathsByModel,
   defaultAppRoomTextures,
@@ -760,24 +778,11 @@ const {
   normalizePropScale,
   normalizeReactionPathsByModel,
   normalizeStylizationEffectPreset,
-  normalizeStylizationFilterPreset,
-  scheduleTaskDispatch
-} = createObserverRuntimeSupport({
-  clients,
-  compactHookText,
+  normalizeStylizationFilterPreset
+} = createObserverAvatarSceneDomain({
   fs,
-  getObserverConfig: () => observerConfig,
-  getPluginManager: () => pluginManager,
-  getTaskDispatchScheduled: () => taskDispatchScheduled,
-  observerEventClients,
   pathModule: path,
-  processQueuedTasksToCapacity: (...args) => processQueuedTasksToCapacity(...args),
-  publicRoot: path.join(__dirname, "public"),
-  recoverStaleTaskDispatchLock: (...args) => recoverStaleTaskDispatchLock(...args),
-  sanitizeHookToken,
-  setTaskDispatchScheduled: (value) => {
-    taskDispatchScheduled = value === true;
-  }
+  publicRoot: path.join(__dirname, "public")
 });
 const {
   ensureObserverToolContainer,
@@ -2872,6 +2877,8 @@ const { selectDispatchableQueuedTask } = createObserverQueueDispatchSelection({
   getBrain,
   getBrainQueueLane,
   getProjectConfig,
+  listAllTasks,
+  listClosedTasksForProjectAttemptAccounting: (...args) => getProjectsRuntime()?.listClosedTasksForProjectAttemptAccounting?.(...args),
   listTasksByFolder,
   normalizeOllamaBaseUrl
 });
@@ -3237,7 +3244,6 @@ const tickObserverCronQueueRuntime = async (...args) => {
 
 registerObserverIotRoutes({
   app,
-  dirname: __dirname,
   iotDomain,
   noteInteractiveActivity
 });

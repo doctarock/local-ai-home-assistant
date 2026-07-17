@@ -100,6 +100,11 @@ export function buildUnhandledProjectCycleCompletionBlocker({
   };
 }
 
+// Sentinel returned by nested per-step handler functions (e.g. handleFinalDecision)
+// to signal "continue the tool loop" back to the caller, since a called function
+// cannot directly `continue` the caller's for-loop.
+const LOOP_CONTINUE = Symbol("observer-execution-runner:loop-continue");
+
 export function createObserverExecutionRunner(context = {}) {
   const {
     annotateNovaSpeechText,
@@ -659,7 +664,7 @@ export function createObserverExecutionRunner(context = {}) {
       }
       let toolCalls = Array.isArray(decision?.tool_calls) ? decision.tool_calls.map((call, index) => normalizeToolCallRecord(call, index)) : [];
       toolCalls = filterDestructiveWriteCallsForInPlaceEdit(toolCalls, message);
-      if (decision?.final || !toolCalls.length) {
+      async function handleFinalDecision(decision, toolCalls) {
         const rawFinalText = normalizeAgentSelfReference(String(decision?.final_text || decision?.assistant_message || "").trim());
         if (!rawFinalText) {
           emptyFinalResponseCount += 1;
@@ -672,7 +677,7 @@ export function createObserverExecutionRunner(context = {}) {
                 "Either return a non-final tool envelope to keep working, or return final_text that states the completed change or the exact phrase 'no change is possible' with inspected paths."
               ].join(" ")
             });
-            continue;
+            return LOOP_CONTINUE;
           }
           return {
             ok: false,
@@ -709,7 +714,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         const outputFilesAfter = await listObserverOutputFiles();
         const changedOutputFiles = outputFilesAfter.filter((file) => {
@@ -769,7 +774,7 @@ export function createObserverExecutionRunner(context = {}) {
             if (retry) {
               return retry;
             }
-            continue;
+            return LOOP_CONTINUE;
           }
           if (isProjectCycleTask && requiresConcreteOutcome && !completionState.eligibleForCompletion) {
             const retry = rejectOrRetryInvalidConcreteFinal(
@@ -784,7 +789,7 @@ export function createObserverExecutionRunner(context = {}) {
             if (retry) {
               return retry;
             }
-            continue;
+            return LOOP_CONTINUE;
           }
           invalidConcreteFinalCount = 0;
           toolLoopDiagnostics.summary = buildToolLoopSummaryText(toolLoopDiagnostics);
@@ -843,7 +848,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedInspectionTool && !hasConcreteFileChange && !(usedConcreteActionTool && !isProjectCycleTask)) {
           const forcedInspectionTarget = inspectFirstTarget || (projectRootTargets.length ? projectRootTargets[0] : "");
@@ -888,7 +893,7 @@ export function createObserverExecutionRunner(context = {}) {
                   role: "assistant",
                   assistant_message: `File content retrieved. Review the content above, then decide whether to edit the file or inspect additional targets. Do not return final=true until you have made a concrete change or verified no change is possible after inspecting at least ${minimumConcreteTargets} distinct concrete targets.`
                 });
-                continue;
+                return LOOP_CONTINUE;
               }
             } catch {
               // Forced injection failed — fall through to standard rejection
@@ -913,7 +918,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && inspectFirstTarget && usedInspectionTool && !inspectedExpectedFirstTarget && !hasConcreteImplementationInspection) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -928,7 +933,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && !hasConcreteImplementationInspection) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -945,7 +950,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && hasNoChangeConclusion && inspectedTargets.size < minimumConcreteTargets) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -960,7 +965,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && hasNoChangeConclusion && !namesInspectedTargets) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -975,7 +980,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && hasNoChangeConclusion && objectiveRequiresConcreteImprovement(objectiveText)) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -990,7 +995,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && objectiveRequiresConcreteImprovement(objectiveText) && !hasNoChangeConclusion && !changedConcreteProjectFiles.length) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -1005,7 +1010,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (
           shouldRejectFinalMissingChangedProjectTarget({
@@ -1028,7 +1033,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (
           isProjectCycleTask
@@ -1049,7 +1054,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (isProjectCycleTask && objectiveRequiresConcreteImprovement(objectiveText) && !hasNoChangeConclusion && projectTodoPath && !changedProjectTodo) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -1064,7 +1069,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         if (preset !== "internal-recreation" && requiresConcreteOutcome && !usedWriteTool && !changedOutputFiles.length && !changedWorkspaceFiles.length && !hasNoChangeConclusion && !completionState.hasMachineVerifiableValidation) {
           const retry = rejectOrRetryInvalidConcreteFinal(
@@ -1079,7 +1084,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         const unhandledCompletionBlocker = buildUnhandledProjectCycleCompletionBlocker({
           isProjectCycleTask,
@@ -1096,7 +1101,7 @@ export function createObserverExecutionRunner(context = {}) {
           if (retry) {
             return retry;
           }
-          continue;
+          return LOOP_CONTINUE;
         }
         invalidConcreteFinalCount = 0;
         toolLoopDiagnostics.summary = buildToolLoopSummaryText(toolLoopDiagnostics);
@@ -1167,6 +1172,13 @@ export function createObserverExecutionRunner(context = {}) {
           stdout: finalText,
           stderr: ""
         };
+      }
+      if (decision?.final || !toolCalls.length) {
+        const finalOutcome = await handleFinalDecision(decision, toolCalls);
+        if (finalOutcome === LOOP_CONTINUE) {
+          continue;
+        }
+        return finalOutcome;
       }
 
       const toolCallSignature = JSON.stringify(

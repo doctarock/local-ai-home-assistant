@@ -1,3 +1,5 @@
+import { formatDayKey as defaultFormatDayKey } from "./observer-prompt-utils.js";
+
 export function createObserverWorkerTools(options = {}) {
   const {
     iotDomain = null,
@@ -11,7 +13,7 @@ export function createObserverWorkerTools(options = {}) {
     editContainerTextFile = async () => ({}),
     ensureAutonomousToolApproved = async () => {},
     ensureVolumeFile = async () => {},
-    formatDayKey = (value = Date.now()) => new Date(value).toISOString().slice(0, 10),
+    formatDayKey = defaultFormatDayKey,
     getCurrentTimeMs = () => Date.now(),
     fs = null,
     getPluginManager = () => null,

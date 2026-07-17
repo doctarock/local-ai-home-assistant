@@ -6,6 +6,8 @@ export function createObserverQueueDispatchSelection(context = {}) {
     getBrain,
     getBrainQueueLane,
     getProjectConfig,
+    listAllTasks,
+    listClosedTasksForProjectAttemptAccounting,
     listTasksByFolder,
     normalizeOllamaBaseUrl
   } = context;
@@ -54,6 +56,18 @@ export function createObserverQueueDispatchSelection(context = {}) {
       return { task: null, message: "No due queued tasks." };
     }
 
+    // Lazily built and reused across every iteration below, instead of each
+    // findRecentProjectWorkAttempt/findRecentProjectCycleMessageAttempt call
+    // independently re-walking the whole task store.
+    let taskCache = null;
+    async function getSharedTaskCache() {
+      if (!taskCache) {
+        taskCache = await listAllTasks();
+        taskCache.closed = await listClosedTasksForProjectAttemptAccounting(taskCache);
+      }
+      return taskCache;
+    }
+
     const suppressedTaskIds = new Set();
     for (const entry of dueTasks) {
       if (entry?.lockRequestedBrain === true) {
@@ -70,7 +84,7 @@ export function createObserverQueueDispatchSelection(context = {}) {
           !isRetryFollowUp
           && String(entry.sessionId || "").trim() === "project-cycle"
           && !String(entry.projectWorkKey || "").trim()
-          && await findRecentProjectCycleMessageAttempt(entry.message, projectConfig.projectWorkRetryCooldownMs, entry.id)
+          && await findRecentProjectCycleMessageAttempt(entry.message, projectConfig.projectWorkRetryCooldownMs, entry.id, await getSharedTaskCache())
         ) {
           suppressedTaskIds.add(String(entry.id || ""));
         }
@@ -79,7 +93,7 @@ export function createObserverQueueDispatchSelection(context = {}) {
       if (isRetryFollowUp) {
         continue;
       }
-      const recentAttempt = await findRecentProjectWorkAttempt(entry.projectWorkKey, projectConfig.projectWorkRetryCooldownMs, entry.id);
+      const recentAttempt = await findRecentProjectWorkAttempt(entry.projectWorkKey, projectConfig.projectWorkRetryCooldownMs, entry.id, await getSharedTaskCache());
       if (recentAttempt) {
         suppressedTaskIds.add(String(entry.id || ""));
       }
@@ -104,6 +118,24 @@ export function createObserverQueueDispatchSelection(context = {}) {
       ...tasks.map((t) => String(t.id || "")).filter(Boolean),
       ...activeTasks.map((t) => String(t.id || "")).filter(Boolean)
     ]);
+    // Group active project_cycle task IDs by project name once, instead of re-scanning
+    // activeTasks for every eligible entry below.
+    const activeProjectCycleTaskIdsByProject = new Map();
+    for (const task of activeTasks) {
+      if (String(task.internalJobType || "") !== "project_cycle") {
+        continue;
+      }
+      const projectName = String(task.projectName || "").trim().toLowerCase();
+      if (!projectName) {
+        continue;
+      }
+      const ids = activeProjectCycleTaskIdsByProject.get(projectName);
+      if (ids) {
+        ids.add(String(task.id || ""));
+      } else {
+        activeProjectCycleTaskIdsByProject.set(projectName, new Set([String(task.id || "")]));
+      }
+    }
     const dispatchable = eligibleDueTasks.filter((entry) => {
       // Block tasks whose declared dependencies are not yet complete
       const deps = Array.isArray(entry.dependsOnTaskIds) ? entry.dependsOnTaskIds : [];
@@ -112,11 +144,10 @@ export function createObserverQueueDispatchSelection(context = {}) {
       }
       const projectName = String(entry.projectName || "").trim().toLowerCase();
       if (projectName) {
-        const activeProjectTaskCount = activeTasks.filter((task) =>
-          String(task.id || "") !== String(entry.id || "")
-          && String(task.projectName || "").trim().toLowerCase() === projectName
-          && String(task.internalJobType || "") === "project_cycle"
-        ).length;
+        const activeIds = activeProjectCycleTaskIdsByProject.get(projectName);
+        const activeProjectTaskCount = activeIds
+          ? activeIds.size - (activeIds.has(String(entry.id || "")) ? 1 : 0)
+          : 0;
         if (activeProjectTaskCount >= projectConfig.maxActiveWorkPackagesPerProject) {
           return false;
         }

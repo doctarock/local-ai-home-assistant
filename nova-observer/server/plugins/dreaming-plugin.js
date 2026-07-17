@@ -6,17 +6,11 @@
  * Author: Nova Observer
  */
 
+import { compactText } from "../observer-general-utils.js";
+
 const DEFAULT_SCAN_LIMIT = 80;
 const DEFAULT_MAX_BYTES_PER_FILE = 420_000;
 const DEFAULT_LONG_TERM_FILE = "LONG-TERM-MEMORY.md";
-
-function compactText(value = "", maxLength = 260) {
-  const normalized = String(value || "").replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, Math.max(1, maxLength - 3)).trimEnd()}...`;
-}
 
 function normalizeLine(value = "") {
   return String(value || "")

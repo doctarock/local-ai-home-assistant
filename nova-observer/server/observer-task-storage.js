@@ -193,23 +193,24 @@ export function createObserverTaskStorage(options = {}) {
     await ensureTaskQueueDirs();
     const entries = await listVolumeFiles(folder);
     const files = entries.filter((entry) => entry.type === "file" && entry.path.endsWith(".json"));
-    const tasks = [];
-    for (const entry of files) {
+    const results = await Promise.all(files.map(async (entry) => {
       try {
         const content = await readVolumeFile(entry.path);
         const parsed = normalizeTaskRecord(JSON.parse(content));
         if (parsed.redirectOnly) {
-          continue;
+          return null;
         }
-        tasks.push({
+        return {
           ...parsed,
           status: parsed.status || status,
           filePath: entry.path
-        });
+        };
       } catch {
         // Skip malformed queue files.
+        return null;
       }
-    }
+    }));
+    const tasks = results.filter(Boolean);
     return tasks.sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
   }
 

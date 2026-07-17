@@ -30,6 +30,7 @@ let pluginTopLevelTabModuleByScript = new Map();
 let pluginNovaTabModuleByScript = new Map();
 let pluginSecretsTabModuleByScript = new Map();
 let pluginSystemTabModuleByScript = new Map();
+let observerCompatPluginHostModulePromise = null;
 let pluginManagerLoadInFlight = null;
 let pluginManagerLastLoadFailed = false;
 
@@ -62,6 +63,48 @@ async function pluginAdminFetch(url = "", options = {}) {
     await observerApp.syncUiSecuritySession?.({ silent: true }).catch(() => {});
   }
   return response;
+}
+
+async function getObserverCompatPluginHostModule() {
+  if (!observerCompatPluginHostModulePromise) {
+    observerCompatPluginHostModulePromise = import("/observer-compat/browser/plugin-host.js");
+  }
+  return observerCompatPluginHostModulePromise;
+}
+
+async function mountSharedPluginTab(moduleExports = {}, tab = {}, mountEl = null) {
+  const { createObserverBrowserHost, mountObserverPluginTab } = await getObserverCompatPluginHostModule();
+  const host = createObserverBrowserHost({
+    api: async (url = "", options = {}) => {
+      const response = await pluginAdminFetch(url, options);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.ok === false) {
+        throw new Error(data?.error || `${response.status} ${response.statusText}`);
+      }
+      return data;
+    },
+    adminFetch: pluginAdminFetch,
+    pluginAdminFetch,
+    refreshAll: async () => loadPluginManagerPanel({ silent: true }),
+    refreshStatus: async () => observerApp.refreshStatus?.(),
+    loadRuntimeOptions: async () => observerApp.loadRuntimeOptions?.(),
+    loadTaskQueue: async () => observerApp.loadTaskQueue?.(),
+    loadCronJobs: async () => observerApp.loadCronJobs?.(),
+    loadSecretsCatalog: async () => observerApp.loadSecretsCatalog?.(),
+    formatTime: observerApp.formatTime?.bind(observerApp),
+    formatDateTime: observerApp.formatDateTime?.bind(observerApp),
+    formatDurationMs: observerApp.formatDurationMs?.bind(observerApp),
+    formatEntityRef: observerApp.formatEntityRef?.bind(observerApp),
+    setStatus: observerApp.setStatus?.bind(observerApp),
+    enqueueUpdate: observerApp.enqueueUpdate?.bind(observerApp),
+    registerTaskJobTypeHandler: observerApp.registerTaskJobTypeHandler?.bind(observerApp),
+    storeSecretHandle: observerApp.storeSecretHandle?.bind(observerApp),
+    clearSecretHandle: observerApp.clearSecretHandle?.bind(observerApp),
+    extra: observerApp
+  });
+  Object.assign(observerApp, host);
+  window.ObserverApp = observerApp;
+  await mountObserverPluginTab(moduleExports, { root: mountEl, tab, host: observerApp });
 }
 
 function getInstalledPlugins() {
@@ -195,14 +238,7 @@ async function mountPluginTopLevelTab(tab = {}, mountEl = null) {
     moduleExports = await import(`${cacheKey}${cacheKey.includes("?") ? "&" : "?"}v=${Date.now()}`);
     pluginTopLevelTabModuleByScript.set(cacheKey, moduleExports);
   }
-  if (typeof moduleExports?.mountPluginTab === "function") {
-    await moduleExports.mountPluginTab({
-      tab,
-      root: mountEl,
-      observerApp: window.ObserverApp || {},
-      pluginAdminFetch
-    });
-  }
+  await mountSharedPluginTab(moduleExports, tab, mountEl);
 }
 
 async function mountPluginSecretsTab(tab = {}, mountEl = null) {
@@ -218,14 +254,7 @@ async function mountPluginSecretsTab(tab = {}, mountEl = null) {
     moduleExports = await import(`${cacheKey}${cacheKey.includes("?") ? "&" : "?"}v=${Date.now()}`);
     pluginSecretsTabModuleByScript.set(cacheKey, moduleExports);
   }
-  if (typeof moduleExports?.mountPluginTab === "function") {
-    await moduleExports.mountPluginTab({
-      tab,
-      root: mountEl,
-      observerApp: window.ObserverApp || {},
-      pluginAdminFetch
-    });
-  }
+  await mountSharedPluginTab(moduleExports, tab, mountEl);
 }
 
 async function mountPluginNovaTab(tab = {}, mountEl = null) {
@@ -241,14 +270,7 @@ async function mountPluginNovaTab(tab = {}, mountEl = null) {
     moduleExports = await import(`${cacheKey}${cacheKey.includes("?") ? "&" : "?"}v=${Date.now()}`);
     pluginNovaTabModuleByScript.set(cacheKey, moduleExports);
   }
-  if (typeof moduleExports?.mountPluginTab === "function") {
-    await moduleExports.mountPluginTab({
-      tab,
-      root: mountEl,
-      observerApp: window.ObserverApp || {},
-      pluginAdminFetch
-    });
-  }
+  await mountSharedPluginTab(moduleExports, tab, mountEl);
 }
 
 async function mountPluginSystemTab(tab = {}, mountEl = null) {
@@ -264,14 +286,7 @@ async function mountPluginSystemTab(tab = {}, mountEl = null) {
     moduleExports = await import(`${cacheKey}${cacheKey.includes("?") ? "&" : "?"}v=${Date.now()}`);
     pluginSystemTabModuleByScript.set(cacheKey, moduleExports);
   }
-  if (typeof moduleExports?.mountPluginTab === "function") {
-    await moduleExports.mountPluginTab({
-      tab,
-      root: mountEl,
-      observerApp: window.ObserverApp || {},
-      pluginAdminFetch
-    });
-  }
+  await mountSharedPluginTab(moduleExports, tab, mountEl);
 }
 
 async function refreshPluginNovaTabs(options = {}) {

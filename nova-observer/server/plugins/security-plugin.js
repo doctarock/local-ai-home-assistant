@@ -7,6 +7,8 @@
  * Observer UI Panel: Yes
  */
 
+import { compactText } from "../observer-general-utils.js";
+
 // ---------------------------------------------------------------------------
 // Tool Orchestration
 // ---------------------------------------------------------------------------
@@ -66,14 +68,6 @@ function buildToolExecutionBatches({ toolCalls = [] } = {}, readOnlySet = READ_O
 // ---------------------------------------------------------------------------
 // Permission Rules
 // ---------------------------------------------------------------------------
-
-function compactText(value = "", maxLength = 220) {
-  const normalized = String(value || "").replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
-}
 
 function stableSerialize(value = null) {
   if (value == null) return "null";
@@ -150,7 +144,7 @@ function normalizeRule(rule = {}, index = 0) {
     id: String(rule.id || `rule-${index + 1}`).trim() || `rule-${index + 1}`,
     tool: normalizeRuleTool(rule.tool),
     behavior: normalizeRuleBehavior(rule.behavior, "allow"),
-    reason: compactText(rule.reason || ""),
+    reason: compactText(rule.reason || "", 220),
     when: {
       commandRegex: compactText(rule?.when?.commandRegex || "", 240),
       pathRegex: compactText(rule?.when?.pathRegex || "", 240),

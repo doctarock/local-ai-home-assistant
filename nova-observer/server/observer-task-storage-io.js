@@ -1,21 +1,4 @@
-const VOLUME_WRITE_RETRY_CODES = new Set([
-  "EBUSY",
-  "EMFILE",
-  "ENFILE",
-  "EPERM",
-  "EACCES",
-  "UNKNOWN"
-]);
-
-function isRetryableVolumeWriteError(error) {
-  return VOLUME_WRITE_RETRY_CODES.has(String(error?.code || "").trim().toUpperCase());
-}
-
-function waitForVolumeWriteRetry(attempt) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, Math.min(2000, 50 * Math.pow(2, attempt)));
-  });
-}
+import { isRetryableFsWriteError, waitForFsWriteRetry } from "./lib/retryable-fs-write.js";
 
 export function createObserverTaskStorageIo(options = {}) {
   const {
@@ -56,44 +39,47 @@ export function createObserverTaskStorageIo(options = {}) {
   }
 
   async function listVolumeFiles(rootPath) {
-    const entries = [];
+    // Each call returns its own entry list (self first, then children in sorted
+    // order) rather than pushing into a shared array, so sibling subtrees can be
+    // walked concurrently while the final concatenated order stays identical to
+    // the original sequential depth-first walk.
     async function walk(currentPath, depth = 0) {
       let stat;
       try {
         stat = await fs.stat(currentPath);
       } catch (error) {
         if (error?.code === "ENOENT") {
-          return;
+          return [];
         }
         throw error;
       }
       const entryName = pathModule.basename(currentPath);
       if (depth > 0 && shouldHideInspectorEntry(entryName)) {
-        return;
+        return [];
       }
-      entries.push({
+      const selfEntry = {
         type: stat.isDirectory() ? "dir" : "file",
         path: currentPath,
         name: entryName
-      });
+      };
       if (!stat.isDirectory() || depth >= 3) {
-        return;
+        return [selfEntry];
       }
       let children = [];
       try {
         children = await fs.readdir(currentPath);
       } catch (error) {
         if (error?.code === "ENOENT") {
-          return;
+          return [selfEntry];
         }
         throw error;
       }
-      for (const child of children.sort()) {
-        await walk(pathModule.join(currentPath, child), depth + 1);
-      }
+      const childResults = await Promise.all(
+        children.sort().map((child) => walk(pathModule.join(currentPath, child), depth + 1))
+      );
+      return [selfEntry, ...childResults.flat()];
     }
-    await walk(rootPath);
-    return entries;
+    return walk(rootPath);
   }
 
   async function readVolumeFile(filePath) {
@@ -142,10 +128,10 @@ export function createObserverTaskStorageIo(options = {}) {
           return;
         } catch (error) {
           lastError = error;
-          if (!isRetryableVolumeWriteError(error) || attempt >= 11) {
+          if (!isRetryableFsWriteError(error) || attempt >= 11) {
             break;
           }
-          await waitForVolumeWriteRetry(attempt);
+          await waitForFsWriteRetry(attempt);
         }
       }
       throw lastError;

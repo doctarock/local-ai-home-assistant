@@ -1,3 +1,5 @@
+import { escapeHtml as h } from "/plugin-tab-shared.js";
+
 let stateBrowserRoot = null;
 let observerAppRef = {};
 let pluginAdminFetchRef = null;
@@ -16,15 +18,6 @@ let stateBrowserScopes = [
   { id: "config", label: "Config", group: "Host runtime" },
   { id: "public", label: "Public UI", group: "Host runtime" }
 ];
-
-function h(value = "") {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 function getElements(root = stateBrowserRoot) {
   if (!(root instanceof HTMLElement)) {

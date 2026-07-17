@@ -1,3 +1,15 @@
+export function escapeRegex(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function compactText(value = "", maxLength = 500) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
 export function createObserverGeneralUtils({
   getAgentPersonaName = () => "Nova",
   observerContainerInputRoot,
@@ -5,10 +17,6 @@ export function createObserverGeneralUtils({
   observerContainerWorkspaceRoot,
   path
 } = {}) {
-  function escapeRegex(value = "") {
-    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
   function normalizeAgentSelfReference(text = "") {
     const persona = getAgentPersonaName();
     const personaPattern = escapeRegex(persona);
@@ -123,7 +131,7 @@ export function createObserverGeneralUtils({
 
   function replaceMarkdownSectionByHeading(content, heading, bodyLines = []) {
     const normalizedContent = String(content || "");
-    const escapedHeading = String(heading || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedHeading = escapeRegex(heading);
     const sectionPattern = new RegExp(`(## ${escapedHeading}\\r?\\n\\r?\\n)([\\s\\S]*?)(?=\\r?\\n## |$)`, "i");
     const replacementBody = `${bodyLines.join("\n")}\n`;
     if (sectionPattern.test(normalizedContent)) {

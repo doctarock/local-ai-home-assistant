@@ -1,3 +1,5 @@
+import * as observerTrustCompat from "../observer-compat/server/trust.js";
+
 export function createMemoryTrustDomain(context = {}) {
   function normalizeTrustLevel(value, fallback = "unknown") {
     const normalized = String(value || "").trim().toLowerCase();
@@ -126,21 +128,9 @@ export function createMemoryTrustDomain(context = {}) {
   }
 
   function normalizeVoiceTrustProfile(entry = {}, index = 0) {
-    const label = String(entry?.label || `Voice profile ${index + 1}`).trim();
-    const signature = normalizeTrustSignature(entry?.signature);
-    const threshold = Math.max(0.45, Math.min(Number(entry?.threshold || 0.82), 0.99));
-    const id = String(entry?.id || `voice-profile-${context.hashRef(`${label}|${index}`)}`).trim();
-    const now = Date.now();
-    return {
-      id,
-      label,
-      trustLevel: normalizeTrustLevel(entry?.trustLevel, "known"),
-      threshold,
-      signature,
-      notes: String(entry?.notes || "").trim(),
-      capturedAt: Number(entry?.capturedAt || entry?.createdAt || (signature.length ? now : 0) || 0),
-      updatedAt: Number(entry?.updatedAt || entry?.capturedAt || entry?.createdAt || (signature.length ? now : 0) || 0)
-    };
+    return observerTrustCompat.normalizeVoiceTrustProfile(entry, index, {
+      hashRef: context.hashRef
+    });
   }
 
   function normalizeCombinedTrustRecord(entry = {}, index = 0) {
@@ -251,51 +241,10 @@ export function createMemoryTrustDomain(context = {}) {
   }
 
   function normalizeAppTrustConfig(input = {}, options = {}) {
-    const trust = input && typeof input === "object" ? input : {};
-    const voiceProfilesInput = Array.isArray(options?.voiceProfiles)
-      ? options.voiceProfiles
-      : (Array.isArray(trust?.voiceProfiles) ? trust.voiceProfiles : []);
-    const records = [];
-    if (Array.isArray(trust?.records)) {
-      trust.records
-        .filter((entry) => hasCombinedTrustRecordData(entry))
-        .forEach((entry, index) => {
-          upsertTrustRecord(records, entry, index);
-        });
-    }
-    if (Array.isArray(trust?.emailSources)) {
-      trust.emailSources.forEach((entry, index) => {
-        const normalized = normalizeEmailTrustSource(entry, index);
-        if (!normalized.email) {
-          return;
-        }
-        upsertTrustRecord(records, normalized, records.length);
-      });
-    }
-    if (Array.isArray(trust?.phoneSources)) {
-      trust.phoneSources.forEach((entry, index) => {
-        const normalized = normalizePhoneTrustSource(entry, index);
-        if (!normalized.phoneNumbers.length) {
-          return;
-        }
-        upsertTrustRecord(records, normalized, records.length);
-      });
-    }
-    voiceProfilesInput.forEach((entry, index) => {
-      const normalized = normalizeVoiceTrustProfile(entry, index);
-      if (!normalized.label && !normalized.signature.length) {
-        return;
-      }
-      upsertTrustRecord(records, normalized, records.length);
+    return observerTrustCompat.normalizeAppTrustConfig(input, {
+      ...options,
+      hashRef: context.hashRef
     });
-    return {
-      emailCommandMinLevel: normalizeTrustLevel(trust?.emailCommandMinLevel, "trusted"),
-      voiceCommandMinLevel: normalizeTrustLevel(trust?.voiceCommandMinLevel, "trusted"),
-      records: records.map((entry, index) => normalizeCombinedTrustRecord(entry, index)),
-      emailSources: trustRecordsToEmailSources(records),
-      phoneSources: trustRecordsToPhoneSources(records),
-      voiceProfiles: trustRecordsToVoiceProfiles(records)
-    };
   }
 
   function getAppTrustConfig() {
@@ -316,51 +265,10 @@ export function createMemoryTrustDomain(context = {}) {
   }
 
   function normalizeSourceIdentityRecord(value = {}, options = {}) {
-    const source = value && typeof value === "object" ? value : {};
-    const preserveTrustLevel = options?.preserveTrustLevel === true;
-    const kind = String(source.kind || "").trim().toLowerCase();
-    if (!kind) {
-      return null;
-    }
-    const normalized = {
-      kind,
-      trustLevel: preserveTrustLevel
-        ? normalizeTrustLevel(source.trustLevel, "unknown")
-        : "unknown"
-    };
-    if (kind === "email") {
-      normalized.email = String(source.email || "").trim().toLowerCase();
-      normalized.label = String(source.label || source.email || "Email source").trim();
-      normalized.sourceId = String(source.sourceId || "").trim();
-      normalized.matchedBy = String(source.matchedBy || "").trim();
-      if (source.command) {
-        normalized.command = {
-          detected: source.command.detected === true,
-          action: String(source.command.action || "").trim(),
-          text: context.compactTaskText(String(source.command.text || "").trim(), 400),
-          reason: context.compactTaskText(String(source.command.reason || "").trim(), 220)
-        };
-      }
-      return normalized;
-    }
-    if (kind === "voice") {
-      normalized.speakerId = String(source.speakerId || "").trim();
-      normalized.speakerLabel = String(source.speakerLabel || source.label || "Unknown speaker").trim();
-      normalized.label = normalized.speakerLabel;
-      normalized.similarity = Number.isFinite(Number(source.similarity)) ? Number(source.similarity) : 0;
-      normalized.threshold = Number.isFinite(Number(source.threshold)) ? Number(source.threshold) : 0;
-      return normalized;
-    }
-    if (kind === "phone") {
-      normalized.phoneNumber = normalizePhoneNumber(source.phoneNumber || source.phone || source.mobile || "");
-      normalized.label = String(source.label || source.callerName || source.phoneNumber || "Unknown caller").trim();
-      normalized.sourceId = String(source.sourceId || "").trim();
-      normalized.matchedBy = String(source.matchedBy || "").trim();
-      normalized.notes = String(source.notes || "").trim();
-      return normalized;
-    }
-    normalized.label = String(source.label || kind).trim();
-    return normalized;
+    return observerTrustCompat.normalizeSourceIdentityRecord(value, {
+      ...options,
+      compactTaskText: context.compactTaskText
+    });
   }
 
   function findMatchingEmailTrustSource({ fromName = "", fromAddress = "" } = {}) {

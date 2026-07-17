@@ -1,13 +1,6 @@
-let pluginAdminFetchRef = null;
+import { escapeHtml as h } from "/plugin-tab-shared.js";
 
-function h(value = "") {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
+let pluginAdminFetchRef = null;
 
 async function api(path = "", options = {}) {
   const fetcher = pluginAdminFetchRef || fetch;

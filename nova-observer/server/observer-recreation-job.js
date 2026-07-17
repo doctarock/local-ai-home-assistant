@@ -1,3 +1,5 @@
+import { formatDayKey as defaultFormatDayKey } from "./observer-prompt-utils.js";
+
 export function createObserverRecreationJob(context = {}) {
   const {
     AGENT_BRAINS,
@@ -107,7 +109,7 @@ export function createObserverRecreationJob(context = {}) {
     const dateLabel = formatDateTimeForUser ? formatDateTimeForUser(now) : new Date(now).toLocaleString();
     const todayKey = typeof formatDayKey === "function"
       ? formatDayKey(now)
-      : new Date(now).toISOString().slice(0, 10);
+      : defaultFormatDayKey(now);
     const workspaceRoot = String(observerContainerWorkspaceRoot || "/home/nova/.observer-sandbox/workspace").replace(/\/$/, "");
     const workspacePersonalMemoryPath = `${workspaceRoot}/memory/personal`;
     const hostPersonalNotesPath = promptMemoryPersonalDailyRoot && path

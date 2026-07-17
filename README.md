@@ -164,6 +164,7 @@ Plugins extend the observer at runtime without modifying core code:
 - Interface and operation registration
 - Plugin inventory visible in the Plugins UI tab
 - Runtime hook and lifecycle events for queue and worker execution telemetry
+- Backward-compatible plugin tab mounting via the `observer-compat` browser host, supporting both native and legacy tab APIs
 - See [Plugin System Developer Guide](docs/PLUGIN-SYSTEM.md) for authoring details
 
 ## 7. Semantic Compression

@@ -1,18 +1,8 @@
-import path from "path";
-
 export function registerObserverIotRoutes({
   app,
-  dirname,
   iotDomain,
   noteInteractiveActivity = () => {}
 } = {}) {
-  const iotSecretsTabPath = path.join(dirname, "server", "plugins", "iot", "public", "iot-secrets-tab.js");
-
-  app.get("/api/plugin-ui/iot/secrets-tab.js", (_req, res) => {
-    res.type("application/javascript");
-    res.sendFile(iotSecretsTabPath);
-  });
-
   app.get("/api/iot/instances", async (_req, res) => {
     try {
       res.json({ ok: true, instances: await iotDomain.listInstances() });

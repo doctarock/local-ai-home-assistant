@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-17 1.6.0
+
+### Added
+- Added `observer-compat` module providing a shared browser plugin host that mounts both native and legacy-style plugin tabs, plus a contract test suite (`observer-compat-contract.test.js`) covering trust normalization, autonomy candidate sorting, and plugin manifest/UI-descriptor normalization.
+- Added `plugin-tab-shared.js` with shared HTML-escaping/formatting helpers used across developer-tools tab scripts.
+
+### Changed
+- Split brain config into focused `brain-registry-domain`, `brain-provider-endpoints`, and `brain-endpoint-health-domain` modules; brain activity snapshots are now cached briefly and computed in a single pass instead of re-scanning tasks per brain.
+- Split plugin system internals into `plugin-data-store`, `plugin-system-helpers`, and `plugin-ui-descriptors` modules; capped tracked plugin failure history to prevent unbounded growth.
+- Deduplicated retryable filesystem write handling into a shared `retryable-fs-write` helper used by the plugin data store and task storage IO.
+- Sped up sandbox volume file listing by walking sibling directories concurrently instead of serially.
+- Cached and precomputed task lookups used for recent project work/attempt detection in queue dispatch selection.
+- Extracted avatar/scene helpers into a dedicated `observer-avatar-scene-domain` module.
+- Renamed `queue-engine-domain` to `queue-presentation-domain`.
+
 ## 2026-06-30 1.5.0
 
 ### Added

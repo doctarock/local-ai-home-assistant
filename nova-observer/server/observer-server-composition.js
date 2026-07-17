@@ -1,5 +1,5 @@
 import { registerIntakeRoutingRoutes } from "./intake-routing-domain.js";
-import { registerQueueEngineRoutes } from "./queue-engine-domain.js";
+import { registerQueuePresentationRoutes } from "./queue-presentation-domain.js";
 import { registerWorkerExecutionRoutes } from "./worker-execution-domain.js";
 import { registerRuntimeRoutes } from "./runtime-domain.js";
 import { registerObserverConfigRoutes } from "./observer-config-domain.js";
@@ -26,7 +26,7 @@ export async function composeObserverServer(context = {}) {
   registerIntakeRoutingRoutes(intakeRouteArgs);
   registerObserverConfigRoutes(observerConfigRouteArgs);
   registerWorkerExecutionRoutes(workerExecutionRouteArgs);
-  registerQueueEngineRoutes(queueEngineRouteArgs);
+  registerQueuePresentationRoutes(queueEngineRouteArgs);
   registerCronRoutes(cronRouteArgs);
 
   await initializeObserverRuntime({

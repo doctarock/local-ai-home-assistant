@@ -1,3 +1,5 @@
+import { escapeRegex } from "./observer-general-utils.js";
+
 const LOOP_LESSONS_STOP_WORDS = new Set(["with", "that", "this", "from", "have", "will", "they", "your", "when", "been", "also", "into", "more", "than", "then", "each", "such", "both", "very", "just", "over", "only", "most", "some", "what", "like", "time", "even", "back", "after", "before", "should", "could", "would", "about", "there", "their", "which", "these", "those"]);
 const LOOP_LESSONS_CACHE = { content: null, readAt: 0 };
 const LOOP_LESSONS_CACHE_TTL_MS = 60000;
@@ -84,7 +86,7 @@ function buildToolEnvelopeContractLines({
 function fallbackExtractTaskDirectiveValue(message = "", label = "") {
   const normalizedLabel = String(label || "").trim().replace(/:$/, "");
   if (!normalizedLabel) return "";
-  const escaped = normalizedLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegex(normalizedLabel);
   const pattern = new RegExp(`^\\s*${escaped}:\\s*([\\s\\S]*?)(?=\\n\\s*[A-Z][A-Za-z0-9 /_-]{2,}:\\s*|$)`, "im");
   return String(message || "").match(pattern)?.[1]?.trim() || "";
 }

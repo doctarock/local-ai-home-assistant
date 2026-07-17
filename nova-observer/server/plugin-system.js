@@ -5,139 +5,31 @@ import {
   isPluginHiddenByProfile,
   resolveProfilePluginState
 } from "./lib/profile-manager.js";
+import { createPluginDataStore } from "./lib/plugin-data-store.js";
+import {
+  listPluginUiEntries,
+  normalizeUiNovaTabDescriptor,
+  normalizeUiPanelDescriptor,
+  normalizeUiSecretsTabDescriptor,
+  normalizeUiSystemTabDescriptor,
+  normalizeUiTabDescriptor
+} from "./lib/plugin-ui-descriptors.js";
+import {
+  CORE_PLUGIN_API_VERSION,
+  DEFAULT_PLUGIN_HOOK_TIMEOUT_MS,
+  canProcessAutoRestart,
+  compareSemver,
+  inferPluginPackageIdFromName,
+  normalizePluginId,
+  normalizePriority,
+  normalizeStartupPriority,
+  sanitizePluginUploadName,
+  sortByPriorityThenOrder,
+  uniquePluginList
+} from "./lib/plugin-system-helpers.js";
 
 const execFileAsync = promisify(execFile);
-
-const PLUGIN_DATA_WRITE_RETRY_CODES = new Set([
-  "EBUSY",
-  "EMFILE",
-  "ENFILE",
-  "EPERM",
-  "EACCES",
-  "UNKNOWN"
-]);
-
-function normalizePluginId(value = "") {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-");
-}
-
-function uniquePluginList(plugins = []) {
-  const seenFactory = new Set();
-  const seenIds = new Set();
-  const normalized = [];
-  for (const plugin of Array.isArray(plugins) ? plugins : []) {
-    if (!plugin) {
-      continue;
-    }
-    if (typeof plugin === "function") {
-      if (seenFactory.has(plugin)) {
-        continue;
-      }
-      seenFactory.add(plugin);
-      normalized.push(plugin);
-      continue;
-    }
-    const id = normalizePluginId(plugin.id || plugin.name);
-    if (!id || seenIds.has(id)) {
-      continue;
-    }
-    seenIds.add(id);
-    normalized.push(plugin);
-  }
-  return normalized;
-}
-
-const CORE_PLUGIN_API_VERSION = "1.4.0";
-const DEFAULT_PLUGIN_HOOK_TIMEOUT_MS = 12000;
-
-function normalizePriority(value = 100) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 100;
-  }
-  return Math.max(0, Math.min(1000, Math.round(parsed)));
-}
-
-function normalizeStartupPriority(value = 100) {
-  return normalizePriority(value);
-}
-
-function parseSemver(value = "") {
-  const normalized = String(value || "").trim();
-  if (!normalized) {
-    return null;
-  }
-  const match = normalized.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
-  if (!match) {
-    return null;
-  }
-  return {
-    major: Number(match[1] || 0),
-    minor: Number(match[2] || 0),
-    patch: Number(match[3] || 0)
-  };
-}
-
-function compareSemver(left = "", right = "") {
-  const leftParsed = parseSemver(left);
-  const rightParsed = parseSemver(right);
-  if (!leftParsed && !rightParsed) {
-    return 0;
-  }
-  if (!leftParsed) {
-    return -1;
-  }
-  if (!rightParsed) {
-    return 1;
-  }
-  if (leftParsed.major !== rightParsed.major) {
-    return leftParsed.major - rightParsed.major;
-  }
-  if (leftParsed.minor !== rightParsed.minor) {
-    return leftParsed.minor - rightParsed.minor;
-  }
-  return leftParsed.patch - rightParsed.patch;
-}
-
-function sanitizePluginUploadName(value = "", fallback = "plugin-package") {
-  const normalized = String(value || "").trim().replace(/[/\\]+/g, " ");
-  const safe = normalized.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-  return safe || fallback;
-}
-
-function inferPluginPackageIdFromName(fileName = "") {
-  const baseName = String(fileName || "")
-    .trim()
-    .replace(/\.zip$/i, "")
-    .replace(/-plugin\.(?:m?js|cjs)$/i, "")
-    .replace(/\.(?:m?js|cjs)$/i, "")
-    .trim();
-  return normalizePluginId(baseName);
-}
-
-function canProcessAutoRestart() {
-  return Boolean(
-    String(process.env.pm_id || "").trim()
-    || String(process.env.PM2_HOME || "").trim()
-    || String(process.env.__daemon || "").trim()
-    || String(process.env.FOREVER_ROOT || "").trim()
-  );
-}
-
-function sortByPriorityThenOrder(entries = []) {
-  return entries
-    .slice()
-    .sort((left, right) => {
-      const priorityDelta = Number(left?.priority || 100) - Number(right?.priority || 100);
-      if (priorityDelta !== 0) {
-        return priorityDelta;
-      }
-      return Number(left?.order || 0) - Number(right?.order || 0);
-    });
-}
+const MAX_TRACKED_PLUGIN_FAILURES = 500;
 
 export function createNovaPluginManager(context = {}) {
   const {
@@ -644,120 +536,13 @@ export function createNovaPluginManager(context = {}) {
     });
   }
 
-  function normalizePluginDataKey(key = "") {
-    return String(key || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._/-]+/g, "-")
-      .replace(/\/+/g, "/")
-      .replace(/^\/+|\/+$/g, "");
-  }
-
-  function resolvePluginDataPath(pluginId = "", key = "", extension = ".json") {
-    if (!pluginDataRoot || !path) {
-      return "";
-    }
-    const normalizedPluginId = normalizePluginId(pluginId);
-    const normalizedKey = normalizePluginDataKey(key);
-    if (!normalizedPluginId || !normalizedKey) {
-      return "";
-    }
-    const normalizedExt = String(extension || ".json").startsWith(".")
-      ? String(extension || ".json")
-      : `.${String(extension || "json")}`;
-    const withExt = normalizedKey.endsWith(normalizedExt)
-      ? normalizedKey
-      : `${normalizedKey}${normalizedExt}`;
-    return path.join(pluginDataRoot, normalizedPluginId, withExt);
-  }
-
-  async function readPluginDataJson(pluginId = "", key = "", fallback = null) {
-    const filePath = resolvePluginDataPath(pluginId, key, ".json");
-    if (!filePath || !fs || typeof fs.readFile !== "function") {
-      return fallback;
-    }
-    try {
-      const raw = await fs.readFile(filePath, "utf8");
-      return JSON.parse(String(raw || "null"));
-    } catch {
-      return fallback;
-    }
-  }
-
-  async function writePluginDataJson(pluginId = "", key = "", value = null) {
-    const filePath = resolvePluginDataPath(pluginId, key, ".json");
-    if (!filePath || !fs || typeof fs.writeFile !== "function" || !path) {
-      return value;
-    }
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    const content = `${JSON.stringify(value, null, 2)}\n`;
-    const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-    const retryDelay = (attempt) => new Promise((resolve) => {
-      setTimeout(resolve, Math.min(1000, 40 * Math.pow(2, attempt)));
-    });
-    const shouldRetry = (error) => PLUGIN_DATA_WRITE_RETRY_CODES.has(String(error?.code || "").trim().toUpperCase());
-    const writeFileWithRetries = async (targetPath, targetContent) => {
-      let lastWriteError = null;
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        try {
-          await fs.writeFile(targetPath, targetContent, "utf8");
-          return;
-        } catch (error) {
-          lastWriteError = error;
-          if (!shouldRetry(error) || attempt >= 5) {
-            break;
-          }
-          await retryDelay(attempt);
-        }
-      }
-      throw lastWriteError;
-    };
-    let lastError = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        await writeFileWithRetries(tempPath, content);
-        if (typeof fs.rename === "function") {
-          await fs.rename(tempPath, filePath);
-        } else {
-          await writeFileWithRetries(filePath, content);
-          if (typeof fs.rm === "function") {
-            await fs.rm(tempPath, { force: true }).catch(() => {});
-          }
-        }
-        return value;
-      } catch (error) {
-        lastError = error;
-        if (shouldRetry(error)) {
-          try {
-            await writeFileWithRetries(filePath, content);
-            if (typeof fs.rm === "function") {
-              await fs.rm(tempPath, { force: true }).catch(() => {});
-            }
-            return value;
-          } catch (fallbackError) {
-            lastError = fallbackError;
-          }
-        }
-        if (typeof fs.rm === "function") {
-          await fs.rm(tempPath, { force: true }).catch(() => {});
-        }
-        if (!shouldRetry(lastError) || attempt >= 4) {
-          break;
-        }
-        await retryDelay(attempt);
-      }
-    }
-    throw lastError;
-  }
-
-  async function updatePluginDataJson(pluginId = "", key = "", updater = null, fallback = null) {
-    const current = await readPluginDataJson(pluginId, key, fallback);
-    const nextValue = typeof updater === "function"
-      ? await updater(current)
-      : current;
-    await writePluginDataJson(pluginId, key, nextValue);
-    return nextValue;
-  }
+  const {
+    normalizePluginDataKey,
+    resolvePluginDataPath,
+    readPluginDataJson,
+    writePluginDataJson,
+    updatePluginDataJson
+  } = createPluginDataStore({ pluginDataRoot, fs, path });
 
   function normalizeManifestPermissions(permissions = {}) {
     const capabilityRules = Array.isArray(permissions.capabilities)
@@ -1091,89 +876,6 @@ export function createNovaPluginManager(context = {}) {
       });
   }
 
-  function normalizeUiPanelDescriptor(pluginId = "", panel = {}) {
-    if (!panel || typeof panel !== "object") {
-      return null;
-    }
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return null;
-    }
-    const panelId = normalizePluginId(panel.id || panel.name || panel.title);
-    if (!panelId) {
-      return null;
-    }
-    const title = String(panel.title || panel.name || panel.id || panelId).trim() || panelId;
-    const description = String(panel.description || "").trim();
-    const fields = Array.isArray(panel.fields)
-      ? panel.fields
-          .map((field) => {
-            if (!field || typeof field !== "object") {
-              return null;
-            }
-            const fieldId = normalizePluginId(field.id || field.name || field.label);
-            if (!fieldId) {
-              return null;
-            }
-            const type = String(field.type || "text").trim().toLowerCase();
-            const normalizedType = ["text", "number", "checkbox", "textarea"].includes(type) ? type : "text";
-            return {
-              id: fieldId,
-              label: String(field.label || fieldId).trim() || fieldId,
-              type: normalizedType,
-              placeholder: String(field.placeholder || "").trim(),
-              required: field.required === true,
-              defaultValue: field.defaultValue == null ? "" : field.defaultValue,
-              min: field.min == null ? null : Number(field.min),
-              max: field.max == null ? null : Number(field.max),
-              step: field.step == null ? null : Number(field.step),
-              format: String(field.format || "").trim().toLowerCase() || ""
-            };
-          })
-          .filter(Boolean)
-      : [];
-    const actions = Array.isArray(panel.actions)
-      ? panel.actions
-          .map((action) => {
-            if (!action || typeof action !== "object") {
-              return null;
-            }
-            const actionId = normalizePluginId(action.id || action.name || action.label);
-            const endpoint = String(action.endpoint || "").trim();
-            if (!actionId || !endpoint) {
-              return null;
-            }
-            const method = String(action.method || "GET").trim().toUpperCase() || "GET";
-            return {
-              id: actionId,
-              label: String(action.label || actionId).trim() || actionId,
-              method,
-              endpoint,
-              queryFields: Array.isArray(action.queryFields)
-                ? action.queryFields.map((entry) => normalizePluginId(entry)).filter(Boolean)
-                : [],
-              bodyFields: Array.isArray(action.bodyFields)
-                ? action.bodyFields.map((entry) => normalizePluginId(entry)).filter(Boolean)
-                : [],
-              staticBody: action.staticBody && typeof action.staticBody === "object"
-                ? action.staticBody
-                : {},
-              expects: String(action.expects || "json").trim().toLowerCase() || "json",
-              confirm: String(action.confirm || "").trim()
-            };
-          })
-          .filter(Boolean)
-      : [];
-    return {
-      id: panelId,
-      pluginId: normalizedPluginId,
-      title,
-      description,
-      fields,
-      actions
-    };
-  }
-
   function recordPluginFailure(pluginId = "", stage = "", error = null) {
     const normalizedPluginId = normalizePluginId(pluginId) || "unknown";
     const normalizedStage = String(stage || "unknown").trim() || "unknown";
@@ -1185,6 +887,9 @@ export function createNovaPluginManager(context = {}) {
       at: Date.now()
     };
     failedPlugins.push(failure);
+    if (failedPlugins.length > MAX_TRACKED_PLUGIN_FAILURES) {
+      failedPlugins.splice(0, failedPlugins.length - MAX_TRACKED_PLUGIN_FAILURES);
+    }
     try {
       broadcast(`[observer] plugin ${normalizedPluginId} ${normalizedStage} failed: ${message}`);
     } catch {
@@ -1208,101 +913,23 @@ export function createNovaPluginManager(context = {}) {
   }
 
   function listPluginUiPanels(pluginId = "") {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return [];
-    }
-    return (uiPanels.get(normalizedPluginId) || []).slice();
-  }
-
-  function normalizeUiNovaTabDescriptor(pluginId = "", tab = {}) {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId || !tab || typeof tab !== "object") {
-      return null;
-    }
-    const tabId = normalizePluginId(tab.id || tab.name || tab.title || normalizedPluginId);
-    const scriptUrl = String(tab.scriptUrl || tab.script || "").trim();
-    if (!tabId || !scriptUrl || !scriptUrl.startsWith("/")) {
-      return null;
-    }
-    return {
-      id: tabId,
-      pluginId: normalizedPluginId,
-      title: String(tab.title || tab.name || tabId).trim() || tabId,
-      order: Number.isFinite(Number(tab.order)) ? Number(tab.order) : 100,
-      scriptUrl
-    };
+    return listPluginUiEntries(uiPanels, pluginId);
   }
 
   function listPluginUiNovaTabs(pluginId = "") {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return [];
-    }
-    return (uiNovaTabs.get(normalizedPluginId) || []).slice();
-  }
-
-  function normalizeUiSecretsTabDescriptor(pluginId = "", tab = {}) {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId || !tab || typeof tab !== "object") {
-      return null;
-    }
-    const tabId = normalizePluginId(tab.id || tab.name || tab.title || normalizedPluginId);
-    const scriptUrl = String(tab.scriptUrl || tab.script || "").trim();
-    if (!tabId || !scriptUrl || !scriptUrl.startsWith("/")) {
-      return null;
-    }
-    return {
-      id: tabId,
-      pluginId: normalizedPluginId,
-      title: String(tab.title || tab.name || tabId).trim() || tabId,
-      order: Number.isFinite(Number(tab.order)) ? Number(tab.order) : 100,
-      scriptUrl
-    };
-  }
-
-  function normalizeUiTabDescriptor(pluginId = "", tab = {}) {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId || !tab || typeof tab !== "object") {
-      return null;
-    }
-    const tabId = normalizePluginId(tab.id || tab.name || tab.title || normalizedPluginId);
-    const scriptUrl = String(tab.scriptUrl || tab.script || "").trim();
-    if (!tabId || !scriptUrl || !scriptUrl.startsWith("/")) {
-      return null;
-    }
-    return {
-      id: tabId,
-      pluginId: normalizedPluginId,
-      title: String(tab.title || tab.name || tabId).trim() || tabId,
-      icon: String(tab.icon || tab.iconText || tabId.slice(0, 1).toUpperCase()).trim().slice(0, 4) || tabId.slice(0, 1).toUpperCase(),
-      order: Number.isFinite(Number(tab.order)) ? Number(tab.order) : 100,
-      scriptUrl
-    };
+    return listPluginUiEntries(uiNovaTabs, pluginId);
   }
 
   function listPluginUiTabs(pluginId = "") {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return [];
-    }
-    return (uiTabs.get(normalizedPluginId) || []).slice();
+    return listPluginUiEntries(uiTabs, pluginId);
   }
 
   function listPluginUiSecretsTabs(pluginId = "") {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return [];
-    }
-    return (uiSecretsTabs.get(normalizedPluginId) || []).slice();
+    return listPluginUiEntries(uiSecretsTabs, pluginId);
   }
 
   function listPluginUiSystemTabs(pluginId = "") {
-    const normalizedPluginId = normalizePluginId(pluginId);
-    if (!normalizedPluginId) {
-      return [];
-    }
-    return (uiSystemTabs.get(normalizedPluginId) || []).slice();
+    return listPluginUiEntries(uiSystemTabs, pluginId);
   }
 
   function normalizeRegressionSuiteDescriptor(pluginId = "", suite = {}) {
@@ -1491,10 +1118,6 @@ export function createNovaPluginManager(context = {}) {
       pluginName: String(pluginName || pluginId).trim() || pluginId,
       order: registrationSequence++
     };
-  }
-
-  function normalizeUiSystemTabDescriptor(pluginId = "", tab = {}) {
-    return normalizeUiSecretsTabDescriptor(pluginId, tab);
   }
 
   function listPluginTools(pluginId = "") {

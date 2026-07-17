@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createBrainToolWorkoutService } from "./lib/brain-tool-workout-service.js";
+import { compactText } from "../../observer-general-utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,13 +52,6 @@ function normalizeNumber(value = 0, fallback = 0, min = 0, max = Number.MAX_SAFE
   return Math.max(min, Math.min(parsed, max));
 }
 
-function compactText(value = "", maxLength = 260) {
-  const normalized = String(value || "").replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
-}
 
 function sanitizeHookToken(value = "") {
   return String(value || "")

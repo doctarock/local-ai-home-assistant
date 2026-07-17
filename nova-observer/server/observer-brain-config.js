@@ -1,16 +1,7 @@
 import crypto from "crypto";
-
-function normalizeModelName(model = "") {
-  return String(model || "").replace(/^ollama\//, "");
-}
-
-function toBrainLabel(modelName = "") {
-  return String(modelName || "")
-    .split(/[:/-]/)
-    .filter(Boolean)
-    .map((part) => (/^\d+b$/i.test(part) ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
-    .join(" ");
-}
+import { createBrainEndpointHealthDomain } from "./lib/brain-endpoint-health-domain.js";
+import { createBrainProviderEndpoints } from "./lib/brain-provider-endpoints.js";
+import { createBrainRegistryDomain, toBrainLabel } from "./lib/brain-registry-domain.js";
 
 export function createObserverBrainConfigDomain(options = {}) {
   const {
@@ -39,515 +30,83 @@ export function createObserverBrainConfigDomain(options = {}) {
     ollamaEndpointFailureCooldownMs = 2 * 60 * 1000
   } = options;
 
+  const { normalizeProviderBaseUrl, normalizeProviderId } = createBrainProviderEndpoints({ localOllamaBaseUrl });
+
+  const {
+    clearOllamaEndpointTransportFailure,
+    formatOllamaTransportError,
+    getOllamaEndpointHealth,
+    getOllamaEndpointTransportCooldown,
+    getProviderEndpointHealth,
+    invalidateCaches: invalidateEndpointHealthCaches,
+    inspectOllamaEndpoint,
+    inspectProviderEndpoint,
+    isRetriableOllamaTransportError,
+    listOllamaModels,
+    markOllamaEndpointTransportFailure,
+    normalizeOllamaBaseUrl,
+    runOllamaEmbed
+  } = createBrainEndpointHealthDomain({
+    localOllamaBaseUrl,
+    ollamaContainer,
+    ollamaEndpointFailureCooldownMs,
+    normalizeProviderId,
+    normalizeProviderBaseUrl,
+    runCommand
+  });
+
+  const {
+    buildBrainConfigPayload,
+    decorateBrain,
+    findBrainByIdExact,
+    getBrain,
+    getBrainEndpointForId,
+    getBrainQueueLane,
+    getConfiguredBrainEndpoints,
+    getEnabledBrainIds,
+    invalidateCaches: invalidateBrainRegistryCaches,
+    isCpuQueueLane,
+    listAvailableBrains,
+    serializeBrainEndpointConfig,
+    serializeBuiltInBrainConfig,
+    serializeCustomBrainConfig
+  } = createBrainRegistryDomain({
+    agentBrains,
+    getObserverConfig,
+    getQueueConfig,
+    getRoutingConfig,
+    localOllamaBaseUrl,
+    normalizeProviderBaseUrl,
+    normalizeProviderId,
+    sanitizeConfigId
+  });
+
   let brainWarmInFlight = false;
-  let availableBrainsCache = { at: 0, brains: [] };
-  let ollamaEndpointHealthCache = { at: 0, entries: {} };
-  let ollamaEndpointFailureState = {};
+  let brainActivitySnapshotCache = { at: 0, snapshot: null };
   const helperShadowCache = new Map();
 
-  function normalizeOllamaBaseUrl(value = "") {
-    const raw = String(value || "").trim();
-    if (!raw) {
-      return localOllamaBaseUrl;
-    }
-    return (/^[a-z]+:\/\//i.test(raw) ? raw : `http://${raw}`).replace(/\/+$/, "");
+  function invalidateObserverConfigCaches() {
+    invalidateBrainRegistryCaches();
+    invalidateEndpointHealthCaches();
+    brainActivitySnapshotCache = { at: 0, snapshot: null };
   }
 
-  function invalidateObserverConfigCaches() {
-    availableBrainsCache = { at: 0, brains: [] };
-    ollamaEndpointHealthCache = { at: 0, entries: {} };
-    ollamaEndpointFailureState = {};
+  function groupTasksByBrainId(tasks = []) {
+    const map = new Map();
+    for (const task of tasks) {
+      const brainId = String(task?.requestedBrainId || "");
+      const list = map.get(brainId);
+      if (list) {
+        list.push(task);
+      } else {
+        map.set(brainId, [task]);
+      }
+    }
+    return map;
   }
 
   function waitMs(delayMs = 0) {
     return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(delayMs || 0))));
-  }
-
-  function formatOllamaTransportError(error) {
-    const message = String(error?.message || "failed to reach Ollama API").trim();
-    const cause = String(error?.cause?.message || error?.cause?.code || "").trim();
-    return cause && !message.toLowerCase().includes(cause.toLowerCase()) ? `${message} (${cause})` : message;
-  }
-
-  function isRetriableOllamaTransportError(error) {
-    if (!error || error?.name === "AbortError") {
-      return false;
-    }
-    const text = formatOllamaTransportError(error).toLowerCase();
-    return ["fetch failed", "econnreset", "socket", "other side closed", "network", "und_err", "connect", "hang up", "terminated"]
-      .some((token) => text.includes(token));
-  }
-
-  function markOllamaEndpointTransportFailure(baseUrl, error) {
-    const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    ollamaEndpointFailureState[normalizedBaseUrl] = {
-      failedAt: Date.now(),
-      error: formatOllamaTransportError(error)
-    };
-    ollamaEndpointHealthCache = { at: 0, entries: { ...ollamaEndpointHealthCache.entries } };
-  }
-
-  function clearOllamaEndpointTransportFailure(baseUrl) {
-    const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    if (ollamaEndpointFailureState[normalizedBaseUrl]) {
-      delete ollamaEndpointFailureState[normalizedBaseUrl];
-      ollamaEndpointHealthCache = { at: 0, entries: { ...ollamaEndpointHealthCache.entries } };
-    }
-  }
-
-  function getOllamaEndpointTransportCooldown(baseUrl) {
-    const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    const failure = ollamaEndpointFailureState[normalizedBaseUrl];
-    if (!failure) {
-      return null;
-    }
-    const ageMs = Date.now() - Number(failure.failedAt || 0);
-    if (ageMs >= ollamaEndpointFailureCooldownMs) {
-      delete ollamaEndpointFailureState[normalizedBaseUrl];
-      return null;
-    }
-    return { ...failure, remainingMs: ollamaEndpointFailureCooldownMs - ageMs };
-  }
-
-  function getEnabledBrainIds() {
-    const configured = Array.isArray(getObserverConfig()?.brains?.enabledIds)
-      ? getObserverConfig().brains.enabledIds
-      : [];
-    return new Set((configured.length ? configured : ["bitnet", "worker"]).map((value) => String(value)));
-  }
-
-  function serializeBrainEndpointConfig(entry = {}, id = "") {
-    const endpointId = sanitizeConfigId(id, "endpoint");
-    const provider = normalizeProviderId(entry?.provider || "ollama");
-    return {
-      label: String(entry?.label || endpointId).trim() || endpointId,
-      provider,
-      baseUrl: normalizeProviderBaseUrl(entry?.baseUrl || "", provider),
-      apiKeyEnv: String(entry?.apiKeyEnv || "").trim(),
-      apiKeyHandle: String(entry?.apiKeyHandle || "").trim()
-    };
-  }
-
-  function normalizeProviderId(value = "") {
-    const normalized = String(value || "ollama").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-    if (["openai", "openai-compatible", "openrouter", "lmstudio", "vllm"].includes(normalized)) {
-      return "openai-compatible";
-    }
-    return normalized || "ollama";
-  }
-
-  function getDefaultProviderBaseUrl(provider = "ollama") {
-    return normalizeProviderId(provider) === "ollama"
-      ? localOllamaBaseUrl
-      : "https://api.openai.com/v1";
-  }
-
-  function normalizeProviderBaseUrl(value = "", provider = "ollama") {
-    const raw = String(value || "").trim();
-    if (!raw) {
-      return getDefaultProviderBaseUrl(provider);
-    }
-    return (/^[a-z]+:\/\//i.test(raw) ? raw : `http://${raw}`).replace(/\/+$/, "");
-  }
-
-  function getConfiguredBrainEndpoints() {
-    const configured = getObserverConfig()?.brains?.endpoints && typeof getObserverConfig().brains.endpoints === "object"
-      ? getObserverConfig().brains.endpoints
-      : {};
-    const entries = Object.entries(configured).map(([id, entry]) => [String(id), {
-      id: String(id),
-      label: String(entry?.label || id),
-      provider: normalizeProviderId(entry?.provider || "ollama"),
-      baseUrl: normalizeProviderBaseUrl(entry?.baseUrl || "", entry?.provider || "ollama"),
-      apiKeyEnv: String(entry?.apiKeyEnv || "").trim(),
-      apiKeyHandle: String(entry?.apiKeyHandle || "").trim()
-    }]);
-    if (!entries.some(([id]) => id === "local")) {
-      entries.unshift(["local", { id: "local", label: "Local Ollama", provider: "ollama", baseUrl: localOllamaBaseUrl, apiKeyEnv: "", apiKeyHandle: "" }]);
-    }
-    return Object.fromEntries(entries);
-  }
-
-  function getBrainEndpointForId(brainId = "") {
-    const endpoints = getConfiguredBrainEndpoints();
-    const assignments = getObserverConfig()?.brains?.assignments && typeof getObserverConfig().brains.assignments === "object"
-      ? getObserverConfig().brains.assignments
-      : {};
-    const endpointId = String(assignments[String(brainId || "")] || "local");
-    const endpoint = endpoints[endpointId] || endpoints.local || { id: "local", label: "Local Ollama", provider: "ollama", baseUrl: localOllamaBaseUrl };
-    return { ...endpoint, id: endpoint.id || endpointId };
-  }
-
-  function normalizeNumGpu(value) {
-    if (value == null) return null;
-    const n = Number(value);
-    return Number.isFinite(n) && Number.isInteger(n) ? n : null;
-  }
-
-  function decorateBrain(brain = {}) {
-    const endpoint = brain?.endpointId || brain?.ollamaBaseUrl || brain?.baseUrl
-      ? {
-          id: String(brain.endpointId || "custom"),
-          label: String(brain.endpointLabel || brain.endpointId || "Custom endpoint"),
-          provider: normalizeProviderId(brain.provider || "ollama"),
-          baseUrl: normalizeProviderBaseUrl(brain.baseUrl || brain.ollamaBaseUrl || "", brain.provider || "ollama"),
-          apiKeyEnv: String(brain.apiKeyEnv || "").trim(),
-          apiKeyHandle: String(brain.apiKeyHandle || "").trim()
-        }
-      : getBrainEndpointForId(brain?.id || "");
-    const provider = normalizeProviderId(endpoint.provider || "ollama");
-    const baseUrl = normalizeProviderBaseUrl(endpoint.baseUrl || "", provider);
-    const numGpu = normalizeNumGpu(brain?.numGpu);
-    return {
-      ...brain,
-      provider,
-      endpointId: String(endpoint.id || "local"),
-      endpointLabel: String(endpoint.label || endpoint.id || "Local Ollama"),
-      baseUrl,
-      ollamaBaseUrl: baseUrl,
-      apiKeyEnv: String(endpoint.apiKeyEnv || brain?.apiKeyEnv || "").trim(),
-      apiKeyHandle: String(endpoint.apiKeyHandle || brain?.apiKeyHandle || "").trim(),
-      remote: provider !== "ollama" || baseUrl !== localOllamaBaseUrl,
-      queueLane: String(brain?.queueLane || "").trim(),
-      numGpu
-    };
-  }
-
-  function normalizeBuiltInBrainOverride(entry = {}) {
-    if (!entry || typeof entry !== "object") {
-      return null;
-    }
-    const id = String(entry.id || "").trim();
-    const fallbackBrain = agentBrains.find((brain) => String(brain.id || "").trim() === id);
-    if (!id || !fallbackBrain) {
-      return null;
-    }
-    const model = normalizeModelName(String(entry.model || "").trim());
-    if (!model) {
-      return null;
-    }
-    const numGpu = normalizeNumGpu(entry.numGpu);
-    return {
-      id,
-      model,
-      ...(numGpu != null ? { numGpu } : {})
-    };
-  }
-
-  function serializeBuiltInBrainConfig(entry = {}) {
-    const normalized = normalizeBuiltInBrainOverride(entry);
-    return normalized ? { ...normalized } : null;
-  }
-
-  function getConfiguredBuiltInBrainOverrides() {
-    const configured = Array.isArray(getObserverConfig()?.brains?.builtIn)
-      ? getObserverConfig().brains.builtIn
-      : [];
-    return configured
-      .map((entry) => normalizeBuiltInBrainOverride(entry))
-      .filter(Boolean);
-  }
-
-  function applyBuiltInBrainOverrides(brain = {}) {
-    const override = getConfiguredBuiltInBrainOverrides().find((entry) => entry.id === String(brain?.id || "").trim());
-    if (!override) {
-      return { ...brain };
-    }
-    return {
-      ...brain,
-      model: override.model || brain.model,
-      ...(override.numGpu != null ? { numGpu: override.numGpu } : {})
-    };
-  }
-
-  function normalizeCustomBrainConfig(entry = {}, index = 0) {
-    if (!entry || typeof entry !== "object") {
-      return null;
-    }
-    const id = String(entry.id || `custom_${index + 1}`).trim();
-    const kind = ["intake", "worker", "helper"].includes(String(entry.kind || "").trim())
-      ? String(entry.kind).trim()
-      : "worker";
-    const model = normalizeModelName(String(entry.model || "").trim());
-    if (!id || !model) {
-      return null;
-    }
-    const endpoint = entry.baseUrl
-      ? {
-          id: String(entry.endpointId || id),
-          label: String(entry.endpointLabel || entry.label || id),
-          provider: normalizeProviderId(entry.provider || "ollama"),
-          baseUrl: normalizeProviderBaseUrl(entry.baseUrl, entry.provider || "ollama"),
-          apiKeyEnv: String(entry.apiKeyEnv || "").trim(),
-          apiKeyHandle: String(entry.apiKeyHandle || "").trim()
-        }
-      : (() => {
-          const configuredEndpoints = getConfiguredBrainEndpoints();
-          const explicitEndpointId = String(entry.endpointId || "").trim();
-          return explicitEndpointId && configuredEndpoints[explicitEndpointId]
-            ? configuredEndpoints[explicitEndpointId]
-            : getBrainEndpointForId(id);
-        })();
-    return decorateBrain({
-      id,
-      label: String(entry.label || toBrainLabel(id)),
-      kind,
-      model,
-      specialty: String(entry.specialty || "").trim().toLowerCase(),
-      toolCapable: entry.toolCapable == null ? kind === "worker" : entry.toolCapable === true,
-      cronCapable: entry.cronCapable === true,
-      description: String(entry.description || "Network Ollama brain"),
-      queueLane: String(entry.queueLane || "").trim(),
-      numGpu: normalizeNumGpu(entry.numGpu),
-      provider: endpoint.provider,
-      endpointId: endpoint.id,
-      endpointLabel: endpoint.label,
-      baseUrl: endpoint.baseUrl,
-      ollamaBaseUrl: endpoint.baseUrl,
-      apiKeyEnv: endpoint.apiKeyEnv,
-      apiKeyHandle: endpoint.apiKeyHandle
-    });
-  }
-
-  function serializeCustomBrainConfig(entry = {}, index = 0, knownEndpointIds = new Set(["local"])) {
-    const id = sanitizeConfigId(entry?.id, `custom_${index + 1}`);
-    const kind = ["intake", "worker", "helper"].includes(String(entry?.kind || "").trim())
-      ? String(entry.kind).trim()
-      : "worker";
-    const model = normalizeModelName(String(entry?.model || "").trim());
-    if (!id || !model) {
-      return null;
-    }
-    const endpointId = knownEndpointIds.has(String(entry?.endpointId || "").trim())
-      ? String(entry.endpointId).trim()
-      : "local";
-    const serializedNumGpu = normalizeNumGpu(entry?.numGpu);
-    return {
-      id,
-      label: String(entry?.label || toBrainLabel(id)).trim() || toBrainLabel(id),
-      kind,
-      model,
-      endpointId,
-      queueLane: String(entry?.queueLane || "").trim(),
-      specialty: String(entry?.specialty || "").trim().toLowerCase(),
-      toolCapable: entry?.toolCapable === true,
-      cronCapable: entry?.cronCapable === true,
-      description: String(entry?.description || "").trim(),
-      ...(serializedNumGpu != null ? { numGpu: serializedNumGpu } : {})
-    };
-  }
-
-  function buildBrainConfigPayload() {
-    const observerConfig = getObserverConfig();
-    const builtInOverrides = getConfiguredBuiltInBrainOverrides();
-    return {
-      brains: {
-        enabledIds: Array.isArray(observerConfig?.brains?.enabledIds) ? observerConfig.brains.enabledIds : [],
-        builtIn: builtInOverrides,
-        endpoints: getConfiguredBrainEndpoints(),
-        assignments: observerConfig?.brains?.assignments && typeof observerConfig.brains.assignments === "object"
-          ? observerConfig.brains.assignments
-          : {},
-        custom: Array.isArray(observerConfig?.brains?.custom) ? observerConfig.brains.custom : []
-      },
-      routing: getRoutingConfig(),
-      queue: getQueueConfig(),
-      builtInBrains: agentBrains.map((brain) => {
-        const effectiveBrain = applyBuiltInBrainOverrides(brain);
-        const numGpu = normalizeNumGpu(effectiveBrain.numGpu);
-        return {
-          id: brain.id,
-          label: effectiveBrain.label,
-          kind: effectiveBrain.kind,
-          model: effectiveBrain.model,
-          description: effectiveBrain.description,
-          ...(numGpu != null ? { numGpu } : {})
-        };
-      })
-    };
-  }
-
-  function isCpuQueueLane(brain = {}) {
-    const explicitLane = String(brain?.queueLane || "").trim().toLowerCase();
-    if (explicitLane.includes("gpu")) return false;
-    if (explicitLane.includes("cpu")) return true;
-    const text = `${String(brain?.model || "").toLowerCase()} ${String(brain?.description || "").toLowerCase()} ${String(brain?.specialty || "").toLowerCase()}`;
-    return /\bcpu\b/.test(text);
-  }
-
-  function getBrainQueueLane(brain = {}) {
-    if (!brain) {
-      return "";
-    }
-    if (String(brain.queueLane || "").trim()) {
-      return String(brain.queueLane || "").trim();
-    }
-    const endpointId = String(brain.endpointId || "local").trim() || "local";
-    return isCpuQueueLane(brain) ? `endpoint:${endpointId}:cpu` : `endpoint:${endpointId}:gpu`;
-  }
-
-  async function listAvailableBrains() {
-    if (Date.now() - Number(availableBrainsCache.at || 0) < 5000 && Array.isArray(availableBrainsCache.brains) && availableBrainsCache.brains.length) {
-      return availableBrainsCache.brains;
-    }
-    const enabledBrainIds = getEnabledBrainIds();
-    const builtInBrains = agentBrains.map((brain) => decorateBrain(applyBuiltInBrainOverrides(brain)));
-    const customBrains = Array.isArray(getObserverConfig()?.brains?.custom)
-      ? getObserverConfig().brains.custom.map((entry, index) => normalizeCustomBrainConfig(entry, index)).filter(Boolean)
-      : [];
-    availableBrainsCache = {
-      at: Date.now(),
-      brains: [...builtInBrains, ...customBrains].filter((brain) => enabledBrainIds.has(brain.id))
-    };
-    return availableBrainsCache.brains;
-  }
-
-  async function getBrain(brainId = "") {
-    const brains = await listAvailableBrains();
-    return brains.find((brain) => brain.id === brainId) || brains.find((brain) => brain.id === "worker") || brains[0] || null;
-  }
-
-  async function findBrainByIdExact(brainId = "") {
-    const target = String(brainId || "").trim();
-    if (!target) {
-      return null;
-    }
-    const brains = await listAvailableBrains();
-    return brains.find((brain) => String(brain.id || "").trim() === target) || null;
-  }
-
-  async function inspectOllamaEndpoint(baseUrl = localOllamaBaseUrl) {
-    const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    const cooldown = getOllamaEndpointTransportCooldown(normalizedBaseUrl);
-    if (cooldown) {
-      return {
-        ok: false,
-        baseUrl: normalizedBaseUrl,
-        status: 0,
-        running: false,
-        modelCount: 0,
-        error: `Cooling down after transport failure: ${cooldown.error}`
-      };
-    }
-    const controller = new AbortController();
-    const timeoutMs = 12000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      let response = null;
-      let parsed = {};
-      let lastError = "";
-      for (const endpointPath of ["/api/tags", "/api/tag"]) {
-        try {
-          response = await fetch(`${normalizedBaseUrl}${endpointPath}`, { method: "GET", signal: controller.signal });
-          try {
-            parsed = await response.json();
-          } catch {
-            parsed = {};
-          }
-          if (response.ok) {
-            break;
-          }
-          lastError = String(parsed?.error || `Ollama API returned ${response.status}`);
-        } catch (error) {
-          lastError = String(error?.message || "failed to reach Ollama API");
-          if (controller.signal.aborted) {
-            throw error;
-          }
-        }
-      }
-      if (!response) {
-        throw new Error(lastError || "failed to reach Ollama API");
-      }
-      return {
-        ok: response.ok,
-        baseUrl: normalizedBaseUrl,
-        status: response.status,
-        running: response.ok,
-        modelCount: Array.isArray(parsed?.models) ? parsed.models.length : 0,
-        error: response.ok ? "" : String(parsed?.error || `Ollama API returned ${response.status}`)
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        baseUrl: normalizedBaseUrl,
-        status: 0,
-        running: false,
-        modelCount: 0,
-        error: error?.name === "AbortError" ? `Observer timeout after ${Math.round(timeoutMs / 1000)}s` : String(error?.message || "failed to reach Ollama API")
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  async function inspectProviderEndpoint(endpoint = {}) {
-    const provider = normalizeProviderId(endpoint?.provider || "ollama");
-    const baseUrl = normalizeProviderBaseUrl(endpoint?.baseUrl || endpoint?.ollamaBaseUrl || "", provider);
-    if (provider === "ollama") {
-      return {
-        provider,
-        ...(await inspectOllamaEndpoint(baseUrl))
-      };
-    }
-    const controller = new AbortController();
-    const timeoutMs = 12000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const headers = {};
-      const apiKey = String(process.env[String(endpoint?.apiKeyEnv || "").trim()] || (provider === "openai-compatible" ? process.env.OPENAI_API_KEY || "" : "")).trim();
-      if (apiKey) {
-        headers.authorization = `Bearer ${apiKey}`;
-      }
-      const response = await fetch(`${baseUrl}/models`, { method: "GET", headers, signal: controller.signal });
-      let parsed = {};
-      try {
-        parsed = await response.json();
-      } catch {
-        parsed = {};
-      }
-      return {
-        ok: response.ok,
-        provider,
-        baseUrl,
-        status: response.status,
-        running: response.ok,
-        modelCount: Array.isArray(parsed?.data) ? parsed.data.length : 0,
-        error: response.ok ? "" : String(parsed?.error?.message || parsed?.error || `Provider API returned ${response.status}`)
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        provider,
-        baseUrl,
-        status: 0,
-        running: false,
-        modelCount: 0,
-        error: error?.name === "AbortError" ? `Observer timeout after ${Math.round(timeoutMs / 1000)}s` : String(error?.message || "failed to reach provider API")
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  async function getOllamaEndpointHealth(baseUrl = localOllamaBaseUrl) {
-    const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-    const now = Date.now();
-    if (now - Number(ollamaEndpointHealthCache.at || 0) < 5000 && ollamaEndpointHealthCache.entries[normalizedBaseUrl]) {
-      return ollamaEndpointHealthCache.entries[normalizedBaseUrl];
-    }
-    const health = await inspectOllamaEndpoint(normalizedBaseUrl);
-    ollamaEndpointHealthCache.entries[normalizedBaseUrl] = health;
-    ollamaEndpointHealthCache.at = now;
-    return health;
-  }
-
-  async function getProviderEndpointHealth(endpoint = {}) {
-    const provider = normalizeProviderId(endpoint?.provider || "ollama");
-    const baseUrl = normalizeProviderBaseUrl(endpoint?.baseUrl || endpoint?.ollamaBaseUrl || "", provider);
-    if (provider === "ollama") {
-      return getOllamaEndpointHealth(baseUrl);
-    }
-    return inspectProviderEndpoint({ ...endpoint, provider, baseUrl });
   }
 
   async function listHealthyToolWorkers() {
@@ -687,19 +246,32 @@ export function createObserverBrainConfigDomain(options = {}) {
   }
 
   async function buildBrainActivitySnapshot() {
+    if (Date.now() - Number(brainActivitySnapshotCache.at || 0) < 2000 && brainActivitySnapshotCache.snapshot) {
+      return brainActivitySnapshotCache.snapshot;
+    }
     const brains = await listAvailableBrains();
     const { queued, waiting, inProgress, done, failed } = await listAllTasks();
-    const allTasks = [...queued, ...waiting, ...inProgress, ...done, ...failed];
     const now = Date.now();
-    return Promise.all(brains.map(async (brain) => {
+    const queuedByBrain = groupTasksByBrainId(queued);
+    const waitingByBrain = groupTasksByBrainId(waiting);
+    const inProgressByBrain = groupTasksByBrainId(inProgress);
+    const doneByBrain = groupTasksByBrainId(done);
+    const failedByBrain = groupTasksByBrainId(failed);
+    const snapshot = await Promise.all(brains.map(async (brain) => {
+      const brainId = String(brain.id || "");
       const queueLane = String(brain.queueLane || getBrainQueueLane(brain)).trim();
-      const brainTasks = allTasks.filter((task) => String(task.requestedBrainId || "") === String(brain.id || ""));
-      const activeTask = inProgress.find((task) => String(task.requestedBrainId || "") === String(brain.id || ""));
+      const brainQueued = queuedByBrain.get(brainId) || [];
+      const brainWaiting = waitingByBrain.get(brainId) || [];
+      const brainInProgress = inProgressByBrain.get(brainId) || [];
+      const brainDone = doneByBrain.get(brainId) || [];
+      const brainFailed = failedByBrain.get(brainId) || [];
+      const brainTasks = [...brainQueued, ...brainWaiting, ...brainInProgress, ...brainDone, ...brainFailed];
+      const activeTask = brainInProgress[0];
       const lastActivityTs = brainTasks.reduce((best, task) =>
         Math.max(best, Number(task.completedAt || task.updatedAt || task.startedAt || task.createdAt || 0)), 0);
       const endpointHealthy = brain.ollamaBaseUrl ? (await getProviderEndpointHealth(brain))?.running === true : true;
-      const timedTasks = done
-        .filter((task) => String(task.requestedBrainId || "") === String(brain.id || "") && Number(task.startedAt || 0) > 0 && Number(task.completedAt || 0) > 0)
+      const timedTasks = brainDone
+        .filter((task) => Number(task.startedAt || 0) > 0 && Number(task.completedAt || 0) > 0)
         .map((task) => Number(task.completedAt) - Number(task.startedAt))
         .filter((ms) => ms > 0);
       const avgRequestMs = timedTasks.length ? Math.round(timedTasks.reduce((sum, ms) => sum + ms, 0) / timedTasks.length) : 0;
@@ -714,11 +286,11 @@ export function createObserverBrainConfigDomain(options = {}) {
         active: Boolean(activeTask),
         activeTaskId: String(activeTask?.id || ""),
         activeTaskCodename: String(activeTask?.codename || ""),
-        queuedCount: queued.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
-        waitingCount: waiting.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
-        inProgressCount: inProgress.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
-        completedCount: done.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
-        failedCount: failed.filter((task) => String(task.requestedBrainId || "") === String(brain.id || "")).length,
+        queuedCount: brainQueued.length,
+        waitingCount: brainWaiting.length,
+        inProgressCount: brainInProgress.length,
+        completedCount: brainDone.length,
+        failedCount: brainFailed.length,
         lastActivityAt: lastActivityTs || 0,
         idleForMs: lastActivityTs ? Math.max(0, now - lastActivityTs) : 0,
         avgRequestMs,
@@ -726,6 +298,8 @@ export function createObserverBrainConfigDomain(options = {}) {
         endpointHealthy
       };
     }));
+    brainActivitySnapshotCache = { at: Date.now(), snapshot };
+    return snapshot;
   }
 
   async function countIdleBackgroundWorkerBrains() {
@@ -1035,49 +609,6 @@ export function createObserverBrainConfigDomain(options = {}) {
       }
     } finally {
       brainWarmInFlight = false;
-    }
-  }
-
-  async function listOllamaModels() {
-    const result = await runCommand("docker", ["exec", ollamaContainer, "ollama", "list"]);
-    if (result.code !== 0) {
-      throw new Error(result.stderr || "failed to list ollama models");
-    }
-    return String(result.stdout || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(1)
-      .map((line) => {
-        const [name, digest, size, modified] = line.split(/\s{2,}/).map((part) => part?.trim());
-        return { name: name || "", digest: digest || "", size: size || "", modified: modified || "" };
-      })
-      .filter((entry) => entry.name);
-  }
-
-  async function runOllamaEmbed(model, input, { timeoutMs = 30000, baseUrl = localOllamaBaseUrl } = {}) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(`${normalizeOllamaBaseUrl(baseUrl)}/api/embed`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model, input }),
-        signal: controller.signal
-      });
-      let parsed = {};
-      try {
-        parsed = await response.json();
-      } catch {
-        parsed = {};
-      }
-      if (!response.ok) {
-        throw new Error(String(parsed?.error || `Ollama API returned ${response.status}`));
-      }
-      const embeddings = Array.isArray(parsed?.embeddings) ? parsed.embeddings : Array.isArray(parsed?.embedding) ? [parsed.embedding] : [];
-      return embeddings.filter((entry) => Array.isArray(entry) && entry.length);
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

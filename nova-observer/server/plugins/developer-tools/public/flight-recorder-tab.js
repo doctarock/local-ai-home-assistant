@@ -1,15 +1,8 @@
+import { escapeHtml as h } from "/plugin-tab-shared.js";
+
 let flightRecorderRoot = null;
 let pluginAdminFetchRef = null;
 let currentTaskId = "";
-
-function h(value = "") {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 function getElements(root = flightRecorderRoot) {
   if (!(root instanceof HTMLElement)) return {};

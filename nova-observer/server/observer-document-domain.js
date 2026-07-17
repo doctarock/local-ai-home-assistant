@@ -1,3 +1,4 @@
+import { formatDayKey as defaultFormatDayKey } from "./observer-prompt-utils.js";
 import { createRetrievalDomain } from "./retrieval-domain.js";
 
 export function createObserverDocumentDomain(options = {}) {
@@ -9,7 +10,7 @@ export function createObserverDocumentDomain(options = {}) {
     defaultQdrantUrl = "http://127.0.0.1:6333",
     documentIndexPath = "",
     ensurePromptWorkspaceScaffolding = async () => {},
-    formatDayKey = (value = Date.now()) => new Date(value).toISOString().slice(0, 10),
+    formatDayKey = defaultFormatDayKey,
     fs = null,
     getDocumentRulesState = () => createInitialDocumentRulesState(),
     getOllamaEndpointHealth = async () => ({ running: false }),
@@ -899,7 +900,7 @@ export function createObserverDocumentDomain(options = {}) {
     }
     const response = await fetch(sourceUrl, {
       headers: {
-        "user-agent": "nova-observer/1.0"
+        "user-agent": "derpy-claw-observer/1.0"
       }
     });
     const buffer = Buffer.from(await response.arrayBuffer());

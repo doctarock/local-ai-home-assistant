@@ -1,11 +1,4 @@
-function h(value = "") {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
+import { escapeHtml as h } from "/plugin-tab-shared.js";
 
 async function api(path = "", options = {}) {
   const response = await fetch(path, options);

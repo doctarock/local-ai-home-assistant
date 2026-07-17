@@ -1,3 +1,20 @@
+export function formatDayKey(value = Date.now()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Australia/Sydney",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date(value));
+    const year = parts.find((part) => part.type === "year")?.value || "0000";
+    const month = parts.find((part) => part.type === "month")?.value || "00";
+    const day = parts.find((part) => part.type === "day")?.value || "00";
+    return `${year}-${month}-${day}`;
+  } catch {
+    return new Date(value).toISOString().slice(0, 10);
+  }
+}
+
 export function createObserverPromptUtils(context = {}) {
   const {
     compactTaskText,
@@ -358,23 +375,6 @@ export function createObserverPromptUtils(context = {}) {
       });
     } catch {
       return new Date(value).toDateString();
-    }
-  }
-
-  function formatDayKey(value = Date.now()) {
-    try {
-      const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Australia/Sydney",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit"
-      }).formatToParts(new Date(value));
-      const year = parts.find((part) => part.type === "year")?.value || "0000";
-      const month = parts.find((part) => part.type === "month")?.value || "00";
-      const day = parts.find((part) => part.type === "day")?.value || "00";
-      return `${year}-${month}-${day}`;
-    } catch {
-      return new Date(value).toISOString().slice(0, 10);
     }
   }
 
