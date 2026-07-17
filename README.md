@@ -1,5 +1,7 @@
 ![Preview](https://repository-images.githubusercontent.com/1188661951/fd2bd3dd-5d6e-489e-9259-59c827988f06)
 
+This will be the last Nova interface release, please feel free to contribute, fork, make it your own. Nova plugins will continue to be added. I will be moving on to Omega, which will be able to use the Nova plugin system, but in the form of a streamlined desktop application, rather than a web interface, and focused on 20B+ models, as opposed to 4B+. I also plan to release a ligher weight Nova core, with most of the inbuilt conveniences carved out, meant purely as a plugin framework, so stay tuned.
+
 ## Documentation
 
 - [Installation](docs/INSTALLATION.md)
